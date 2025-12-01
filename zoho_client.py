@@ -70,7 +70,19 @@ class ZohoClient:
             print("⚠️  Zoho API not enabled - check credentials")
             return None
 
-        # Try searching with all possible statuses since Zoho API filters by default
+        # First try to find the invoice from a full invoice dump (single API loop)
+        try:
+            print(f"🔍 Searching cached full invoice list for {invoice_number}...")
+            all_invoices = self.fetch_all_invoices()
+            for invoice in all_invoices:
+                if invoice.get('invoice_number') == invoice_number:
+                    print(f"   ✅ Found invoice {invoice_number} while scanning all invoices (Status: {invoice.get('status', 'unknown')})")
+                    return invoice
+            print(f"   ⚠️  Invoice {invoice_number} not found in full invoice list, falling back to status-wise API search")
+        except Exception as e:
+            print(f"   ⚠️  Failed scanning all invoices for {invoice_number}: {e}")
+
+        # Fallback: Try searching with specific statuses since Zoho API filters by default
         statuses_to_try = ['all', 'draft', 'sent', 'paid', 'overdue', 'void', 'unpaid']
 
         for status in statuses_to_try:

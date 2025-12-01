@@ -66,11 +66,13 @@ class ReconciliationEngine:
         discrepancies = []
         confidence = 100.0
 
-        # Amount matching
-        payment_amount = float(payment['payment_amount']) if payment['payment_amount'] else 0
+        # Amount matching - use bill_amount (gross invoice amount) to match with Zoho total
+        # bill_amount = gross amount before TDS deduction (should match Zoho invoice total)
+        # Falls back to payment_amount if bill_amount is not available
+        payment_amount = float(payment.get('bill_amount') or payment.get('payment_amount') or 0)
         invoice_amount = float(invoice['total_amount'])
         amount_difference = abs(payment_amount - invoice_amount)
-        amount_match = amount_difference <= 10.0  # Allow ₹1 difference for rounding
+        amount_match = amount_difference <= 10.0  # Allow ₹10 difference for rounding
 
         if not amount_match:
             discrepancies.append(f"Amount mismatch: Payment ₹{payment_amount}, Invoice ₹{invoice_amount}")
@@ -127,24 +129,20 @@ class ReconciliationEngine:
                 print(f"   ⚠️ Cannot auto-mark as paid: Missing customer_id in cached invoice")
                 discrepancies.append("⚠️ Cannot auto-mark: Missing customer ID")
             else:
-                # AUTO-MARK AS PAID FEATURE DISABLED
-                # Uncomment below to enable automatic payment recording in Zoho
-                pass
-                
-                # success = self.zoho.auto_mark_invoice_as_paid(
-                #     invoice_id=invoice_id,
-                #     invoice_number=invoice_number,
-                #     payment_amount=balance_due,
-                #     payment_date=payment_date,
-                #     utr_number=utr_number,
-                #     invoice_status=invoice_status,
-                #     customer_id=customer_id
-                # )
-                #
-                # if success:
-                #     discrepancies.append("✅ AUTO-MARKED AS PAID IN ZOHO")
-                # else:
-                #     discrepancies.append("⚠️ Failed to auto-mark as paid in Zoho")
+                success = self.zoho.auto_mark_invoice_as_paid(
+                    invoice_id=invoice_id,
+                    invoice_number=invoice_number,
+                    payment_amount=balance_due,
+                    payment_date=payment_date,
+                    utr_number=utr_number,
+                    invoice_status=invoice_status,
+                    customer_id=customer_id
+                )
+
+                if success:
+                    discrepancies.append("✅ AUTO-MARKED AS PAID IN ZOHO")
+                else:
+                    discrepancies.append("⚠️ Failed to auto-mark as paid in Zoho")
 
         discrepancy_notes = '; '.join(discrepancies) if discrepancies else 'No discrepancies found'
 

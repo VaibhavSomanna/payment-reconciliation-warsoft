@@ -44,7 +44,7 @@ reconciliation_status = {
 
 
 class ReconciliationRequest(BaseModel):
-    max_emails: int = 10
+    max_emails: int = 1000000
     days_back: int = 7
     auto_mark_paid: bool = True
 

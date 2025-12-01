@@ -569,25 +569,67 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
             if not bill_amount or not tds_amount or not net_amount:
                 print(f"   ⚠️  Label-based extraction incomplete, trying decimal fallback...")
 
-                # Extract all decimal numbers from the invoice line
-                # Pattern: numbers with exactly 2 decimal places (e.g., 570.00, 5814.00)
-                decimal_amounts = re.findall(r'\b(\d{1,7}\.\d{2})\b', invoice_line)
+                # FIXED: Extract all decimal numbers including those with commas
+                # Pattern matches: 7,850.00 or 8,801.00 or 951.00 or 157.00 or 8,644.00
+                decimal_amounts_pattern = r'(\d{1,3}(?:,\d{3})*\.\d{2})'
+                decimal_matches = re.findall(decimal_amounts_pattern, invoice_line)
 
-                if len(decimal_amounts) >= 2:
-                    # If we have 2+ decimal numbers on the line:
-                    # First decimal = TDS, Last decimal = Net Payment
-                    if not tds_amount:
-                        tds_amount = float(decimal_amounts[0])
-                    if not net_amount:
-                        net_amount = float(decimal_amounts[-1])
+                # Remove commas and convert to float
+                decimal_amounts = []
+                for match in decimal_matches:
+                    try:
+                        clean_amount = float(match.replace(',', ''))
+                        # Only keep amounts >= 10 (to filter out tiny numbers like 0.00)
+                        if clean_amount >= 10:
+                            decimal_amounts.append(clean_amount)
+                    except:
+                        continue
+
+                print(f"   🔢 Found decimal amounts in line: {decimal_amounts}")
+
+                # For your payment advice format, the columns are:
+                # [0]=Amount, [1]=GST Amount, [2]=Invoice Amount, [3]=Other Adjustment, [4]=Mobilization Advance,
+                # [5]=Other Advance, [6]=TDS, [7]=Retention, [8]=SDR, [9]=Other Holds, [10]=Total deduction,
+                # [11]=Net invoice value, [12]=Current Net Paid
+
+                # We need: Invoice Amount (bill_amount), TDS, Current Net Paid (net_payment_amount)
+                if len(decimal_amounts) >= 7:
+                    # Extract from specific positions based on your table structure
                     if not bill_amount:
-                        bill_amount = net_amount + tds_amount  # Calculate bill amount
-                    print(f"   💰 Fallback extraction: TDS={tds_amount}, Net={net_amount}, Bill={bill_amount}")
+                        bill_amount = decimal_amounts[2]  # Index 2 = Invoice Amount (8,801.00)
+                    if not tds_amount:
+                        tds_amount = decimal_amounts[6]  # Index 6 = TDS (157.00)
+                    if not net_amount:
+                        net_amount = decimal_amounts[-1]  # Last value = Current Net Paid (8,644.00)
+                    print(
+                        f"   💰 Fallback extraction (full table): Bill={bill_amount}, TDS={tds_amount}, Net={net_amount}")
+
+                elif len(decimal_amounts) >= 3:
+                    # Partial table - try to identify by position
+                    if not bill_amount:
+                        bill_amount = decimal_amounts[2] if len(decimal_amounts) > 2 else None
+                    if not tds_amount:
+                        # TDS is usually a smaller amount in the middle
+                        tds_amount = min(decimal_amounts[1:]) if len(decimal_amounts) > 1 else None
+                    if not net_amount:
+                        net_amount = decimal_amounts[-1]  # Last amount = net paid
+                    print(f"   💰 Fallback extraction (partial): Bill={bill_amount}, TDS={tds_amount}, Net={net_amount}")
+
+                elif len(decimal_amounts) == 2:
+                    # If we have 2 decimal numbers: likely Bill Amount and Net Amount
+                    if not bill_amount:
+                        bill_amount = max(decimal_amounts)  # Larger amount = gross bill
+                    if not net_amount:
+                        net_amount = min(decimal_amounts)  # Smaller amount = net paid
+                    if not tds_amount and bill_amount and net_amount:
+                        tds_amount = bill_amount - net_amount  # Calculate TDS
+                    print(
+                        f"   💰 Fallback extraction (2 values): Bill={bill_amount}, Net={net_amount}, TDS={tds_amount}")
 
                 elif len(decimal_amounts) == 1 and not net_amount:
                     # Only one decimal number - assume it's the net payment
-                    net_amount = float(decimal_amounts[0])
-                    print(f"   💰 Fallback extraction: Net={net_amount}")
+                    net_amount = decimal_amounts[0]
+                    print(f"   💰 Fallback extraction (1 value): Net={net_amount}")
 
             payment_date = self.extract_payment_date(context)
 
@@ -631,7 +673,8 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
                             raw_text += "\n" + pdf_text
                             print(f"   ✅ PDF text extracted successfully ({len(pdf_text)} chars)")
                         else:
-                            print(f"   ⚠️  PDF text extraction insufficient ({len(pdf_text.strip()) if pdf_text else 0} chars)")
+                            print(
+                                f"   ⚠️  PDF text extraction insufficient ({len(pdf_text.strip()) if pdf_text else 0} chars)")
 
                         pdf_processed = True  # Mark that we've processed a PDF
                         break  # Exit the loop after processing first PDF
@@ -716,6 +759,13 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
             mail.select('inbox')
             print("✅ Connected to Gmail")
 
+            # Get configuration for marking emails as read
+            mark_as_read = os.getenv('MARK_PAYMENT_EMAILS_AS_READ', 'true').lower() == 'true'
+            if mark_as_read:
+                print("ℹ️  Payment advice emails will be marked as read")
+            else:
+                print("ℹ️  All emails will remain unread (MARK_PAYMENT_EMAILS_AS_READ=false)")
+
             since_date = (datetime.now() - timedelta(days=days_back)).strftime('%d-%b-%Y')
             status, messages = mail.search(None, f'SINCE {since_date}')
             email_ids = messages[0].split()
@@ -736,7 +786,8 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
 
             for email_id in email_ids:
                 try:
-                    status, msg_data = mail.fetch(email_id, '(RFC822)')
+                    # Use BODY.PEEK[] to fetch without marking as read automatically
+                    status, msg_data = mail.fetch(email_id, '(BODY.PEEK[])')
                     email_message = email.message_from_bytes(msg_data[0][1])
 
                     subject = str(email_message.get('Subject', ''))
@@ -773,6 +824,13 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
                         else:
                             # Backward compatibility (shouldn't happen with new code)
                             payment_advices.append(payment_data_list)
+
+                        # Mark payment advice email as read (if feature enabled)
+                        if mark_as_read:
+                            mail.store(email_id, '+FLAGS', '\\Seen')
+                            print(f"   ✅ Marked email as read")
+                        else:
+                            print(f"   ℹ️  Keeping email as unread")
 
                 except Exception as e:
                     print(f"⚠️  Error processing email: {e}")
