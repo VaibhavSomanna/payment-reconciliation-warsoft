@@ -35,6 +35,16 @@ BANK_PATTERNS = [
     'bank of india', 'idbi', 'federal bank', 'rbl'
 ]
 
+# Bank reference number prefixes (for UTR/reference extraction)
+BANK_REFERENCE_PREFIXES = [
+    'CITIN', 'HSBCN', 'SBIN', 'SCBLN', 'IN1ON', 'HDFCN', 'ICICIN', 
+    'AXISN', 'KOTAKN', 'YESBN', 'IDFCN', 'PNBIN', 'BOBIN', 'CANARAIN',
+    'UNIONN', 'IDBIIN', 'FEDLN', 'RBLIN', 'UTIB', 'BARB', 'CNRB',
+    'PUNB', 'MAHB', 'CORP', 'BKID', 'ORBC', 'ALLA', 'ANDB', 'SYNB',
+    'UCBA', 'VIJB', 'IOBA', 'CBIN', 'SRCB', 'TMBL', 'KARB', 'KVBL',
+    'DLXB', 'JAKA', 'SIBL', 'CITI', 'HSBC', 'SCBL', 'DEUT', 'BARB'
+]
+
 
 class PaymentAdviceExtractor:
     def __init__(self):
@@ -248,6 +258,285 @@ class PaymentAdviceExtractor:
             if matches:
                 return matches[0].strip().upper()
 
+        return None
+
+    def extract_bank_reference_number(self, text):
+        """Extract bank reference/UTR number from text
+        
+        Patterns supported:
+        - CITIN25657707761 (Citi Bank)
+        - HSBCN52025112997504684 (HSBC)
+        - SBIN525331564590 (SBI)
+        - SCBLN52025112700783823 (Standard Chartered)
+        - IN1ON251126022I2 (Other banks)
+        - Standard UTR patterns
+        """
+        
+        # Build dynamic pattern from bank prefixes
+        prefix_pattern = '|'.join(BANK_REFERENCE_PREFIXES)
+        
+        patterns = [
+            # HIGHEST PRIORITY: Bank-specific reference with prefix (e.g., CITIN25657707761)
+            rf'\b({prefix_pattern})\d{{8,20}}\b',
+            
+            # Bank reference with alphanumeric suffix (e.g., IN1ON251126022I2)
+            rf'\b({prefix_pattern})[A-Z0-9]{{8,20}}\b',
+            
+            # Generic bank reference patterns
+            r'\b([A-Z]{4,6}[NR]?\d{10,20})\b',  # HDFCN followed by digits
+            r'\b([A-Z]{4}\d{2}[A-Z0-9]{10,18})\b',  # UTIB23xxxxx format
+            
+            # Labeled reference patterns
+            r'(?:bank\s*)?ref(?:erence)?(?:\s*(?:no|number|#))?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            r'utr\s*(?:no|number|#)?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            r'transaction\s*(?:ref|reference|id)?\s*(?:no|number)?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            r'neft\s*(?:ref|reference)?\s*(?:no|number)?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            r'rtgs\s*(?:ref|reference)?\s*(?:no|number)?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            r'imps\s*(?:ref|reference)?\s*(?:no|number)?\s*[:\-]?\s*([A-Z0-9]{12,25})',
+            
+            # Reference in table format (Reference: XXXX or Ref No: XXXX)
+            r'(?:reference|ref\s*no|txn\s*ref|trans\s*ref)\s*[:\-]?\s*([A-Z0-9]{10,25})',
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                for match in matches:
+                    # Handle tuple matches (from patterns with capture groups)
+                    if isinstance(match, tuple):
+                        ref = ''.join(match).strip().upper()
+                    else:
+                        ref = match.strip().upper()
+                    
+                    # Validate: must be alphanumeric, reasonable length, and not an invoice number
+                    if (len(ref) >= 10 and 
+                        len(ref) <= 30 and
+                        ref.isalnum() and
+                        not any(x in ref for x in ['EXT', 'HBT']) and  # Not an invoice number
+                        not ref.startswith('INV') and
+                        not re.match(r'^\d+$', ref)):  # Not pure digits
+                        
+                        print(f"   ✅ Found bank reference: {ref}")
+                        return ref
+        
+        return None
+
+    def extract_customer_name(self, text, email_from=None):
+        """Extract customer/remitter name from payment advice or email
+        
+        Looks for:
+        - Remitter Name field
+        - Sender/From field in payment advice
+        - Customer Name field
+        - Company name patterns
+        """
+        
+        patterns = [
+            # Remitter name patterns (most common in payment advices)
+            r'remitter\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            r'remitter\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            
+            # Sender/From patterns
+            r'(?:sender|from|payer|debtor)\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            
+            # Customer/Company patterns
+            r'customer\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            r'company\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            r'client\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            
+            # Party patterns
+            r'paying\s*party\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            r'debit\s*(?:party|account\s*name)\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            
+            # Account holder name
+            r'a/?c\s*(?:holder)?\s*(?:name)?\s*[:\-]?\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+            
+            # Name field (generic but useful)
+            r'\bname\s*[:\-]\s*([A-Za-z][A-Za-z\s\.&,\-\']{3,50}?)(?:\n|$|,|\s{2,})',
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                for match in matches:
+                    name = match.strip()
+                    
+                    # Clean up the name
+                    name = re.sub(r'\s+', ' ', name)  # Normalize whitespace
+                    name = name.strip(' .,:-')  # Remove trailing punctuation
+                    
+                    # Validate: reasonable name (not too short, not just numbers)
+                    if (len(name) >= 3 and 
+                        len(name) <= 60 and
+                        not name.isdigit() and
+                        any(c.isalpha() for c in name) and
+                        name.upper() not in ['NA', 'N/A', 'NIL', 'NONE', 'NULL', 'BANK', 'DATE', 'AMOUNT']):
+                        
+                        print(f"   ✅ Found customer name: {name}")
+                        return name.title()  # Return in title case
+        
+        # Fallback: Try to extract from email sender (if provided)
+        if email_from:
+            # Extract name from email format: "John Doe <john@example.com>" or "john@company.com"
+            email_name_match = re.match(r'^([^<]+)<', email_from)
+            if email_name_match:
+                name = email_name_match.group(1).strip().strip('"\'')
+                if len(name) >= 3:
+                    print(f"   ✅ Found customer name from email: {name}")
+                    return name.title()
+            
+            # Try to extract company name from email domain
+            domain_match = re.search(r'@([^.]+)\.', email_from)
+            if domain_match:
+                domain_name = domain_match.group(1)
+                if len(domain_name) >= 3 and domain_name.lower() not in ['gmail', 'yahoo', 'outlook', 'hotmail']:
+                    print(f"   ✅ Found company from email domain: {domain_name}")
+                    return domain_name.upper()
+        
+        return None
+
+    def extract_invoice_date(self, text, invoice_number=None):
+        """Extract invoice date - looks for date near the invoice number
+        
+        Args:
+            text: Full text to search
+            invoice_number: If provided, looks for date specifically near this invoice
+        
+        Returns:
+            Date string in YYYY-MM-DD format or None
+        """
+        
+        # If invoice number provided, find it and look for nearby dates
+        if invoice_number:
+            # Find the position of the invoice number in text
+            inv_pattern = re.escape(invoice_number.replace('/', r'[\s/]*'))
+            inv_match = re.search(inv_pattern, text, re.IGNORECASE)
+            
+            if inv_match:
+                # Get context around the invoice number (100 chars before and after)
+                start = max(0, inv_match.start() - 50)
+                end = min(len(text), inv_match.end() + 100)
+                context = text[start:end]
+                
+                # Look for dates in this context
+                date_patterns = [
+                    r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',  # DD-MM-YYYY or DD/MM/YYYY
+                    r'(\d{4}[-/]\d{1,2}[-/]\d{1,2})',  # YYYY-MM-DD
+                    r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{2,4})',  # 12 Jan 2024
+                    r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{2,4})',  # Jan 12, 2024
+                ]
+                
+                for pattern in date_patterns:
+                    matches = re.findall(pattern, context, re.IGNORECASE)
+                    if matches:
+                        date_str = matches[0]
+                        parsed_date = self._parse_date(date_str)
+                        if parsed_date:
+                            print(f"   ✅ Found invoice date near invoice number: {parsed_date}")
+                            return parsed_date
+        
+        # Fallback: Look for labeled invoice date
+        labeled_patterns = [
+            r'invoice\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'inv\.?\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'bill\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'dated?\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+        ]
+        
+        for pattern in labeled_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                parsed_date = self._parse_date(matches[0])
+                if parsed_date:
+                    print(f"   ✅ Found labeled invoice date: {parsed_date}")
+                    return parsed_date
+        
+        return None
+
+    def extract_transaction_date(self, text):
+        """Extract transaction/payment date from top of payment advice
+        
+        This is typically at the top of the PDF and represents when the payment was made.
+        Different from invoice date (when invoice was issued) and payment_date (when payment was received).
+        """
+        
+        # Split text into lines and focus on the first 20 lines (header area)
+        lines = text.split('\n')[:20]
+        header_text = '\n'.join(lines)
+        
+        patterns = [
+            # Explicit transaction date labels
+            r'transaction\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'txn\.?\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'trans\.?\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Payment date labels (often in header)
+            r'payment\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            r'date\s*of\s*payment\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Value date (banking term)
+            r'value\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Processing/execution date
+            r'(?:processing|execution|transfer)\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Advice date
+            r'advice\s*date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Generic date label at top
+            r'^date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})',
+            
+            # Date with time (common in headers)
+            r'date\s*[:\-]?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\s*\d{1,2}:\d{2}',
+            
+            # YYYY-MM-DD format
+            r'(?:transaction|txn|payment|value|advice)?\s*date\s*[:\-]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, header_text, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                parsed_date = self._parse_date(matches[0])
+                if parsed_date:
+                    print(f"   ✅ Found transaction date: {parsed_date}")
+                    return parsed_date
+        
+        # Fallback: Find the first date in the header area
+        generic_date_pattern = r'(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})'
+        matches = re.findall(generic_date_pattern, header_text)
+        if matches:
+            parsed_date = self._parse_date(matches[0])
+            if parsed_date:
+                print(f"   ✅ Found transaction date (first in header): {parsed_date}")
+                return parsed_date
+        
+        return None
+
+    def _parse_date(self, date_str):
+        """Parse various date formats and return YYYY-MM-DD string"""
+        if not date_str:
+            return None
+        
+        date_str = date_str.strip()
+        
+        # List of date formats to try
+        formats = [
+            '%d-%m-%Y', '%d/%m/%Y',  # DD-MM-YYYY
+            '%d-%m-%y', '%d/%m/%y',  # DD-MM-YY
+            '%Y-%m-%d', '%Y/%m/%d',  # YYYY-MM-DD
+            '%d %b %Y', '%d %B %Y',  # 12 Jan 2024
+            '%d-%b-%Y', '%d-%B-%Y',  # 12-Jan-2024
+            '%b %d, %Y', '%B %d, %Y',  # Jan 12, 2024
+            '%b %d %Y', '%B %d %Y',  # Jan 12 2024
+        ]
+        
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(date_str, fmt)
+                return parsed.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+        
         return None
 
     def extract_payment_date(self, text):
@@ -700,14 +989,18 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
                     'email_subject': subject,
                     'email_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'invoice_number': row['invoice_number'],
+                    'invoice_date': self.extract_invoice_date(combined_text, row['invoice_number']),
                     'payment_date': row['payment_date'] or self.extract_payment_date(combined_text),
+                    'transaction_date': self.extract_transaction_date(combined_text),
                     'payment_amount': amount_for_matching,
                     'net_payment_amount': row['net_payment_amount'],
                     'bill_amount': row['bill_amount'],
                     'tds_amount': row['tds_amount'],
                     'bank_name': self.extract_bank_name(combined_text),
+                    'bank_reference_number': self.extract_bank_reference_number(combined_text),
                     'transaction_reference': None,
                     'utr_number': self.extract_utr_number(combined_text),
+                    'customer_name': self.extract_customer_name(combined_text, from_email),
                     'vendor_name': None,
                     'pdf_filename': pdf_filename,
                     'pdf_data': pdf_data,
@@ -724,6 +1017,9 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
             net_payment_amount = self.extract_payment_amount(combined_text)  # "Amount" column (net, after TDS)
             bill_amount = self.extract_bill_amount(combined_text)  # "Amt/Bill Amt" field (gross, before TDS)
             tds_amount = self.extract_tds_amount(combined_text)  # TDS deducted
+            
+            # Extract invoice number first (needed for invoice_date extraction)
+            invoice_number = self.extract_invoice_number(combined_text)
 
             # Use net_payment_amount (Amount column) for matching with Zoho
             amount_for_matching = net_payment_amount
@@ -733,15 +1029,19 @@ VENDOR/BENEFICIARY: {result.get('vendor_name', 'Not Found')}
                 'email_from': from_email,
                 'email_subject': subject,
                 'email_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'invoice_number': self.extract_invoice_number(combined_text),
+                'invoice_number': invoice_number,
+                'invoice_date': self.extract_invoice_date(combined_text, invoice_number),
                 'payment_date': self.extract_payment_date(combined_text),
+                'transaction_date': self.extract_transaction_date(combined_text),
                 'payment_amount': amount_for_matching,  # Use net payment amount (Amount column) for Zoho matching
                 'net_payment_amount': net_payment_amount,  # Net payment (Amount column - what was actually paid)
                 'bill_amount': bill_amount,  # Gross invoice amount (Amt field - before TDS)
                 'tds_amount': tds_amount,  # TDS deducted
                 'bank_name': self.extract_bank_name(combined_text),
+                'bank_reference_number': self.extract_bank_reference_number(combined_text),
                 'transaction_reference': None,
                 'utr_number': self.extract_utr_number(combined_text),
+                'customer_name': self.extract_customer_name(combined_text, from_email),
                 'vendor_name': None,
                 'pdf_filename': pdf_filename,
                 'pdf_data': pdf_data,
