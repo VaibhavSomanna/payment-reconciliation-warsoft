@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 """
-Reconciliation Engine - Match payment advices with Zoho invoices by invoice number
+Reconciliation Engine - Match payment advices with Warsoft invoices by invoice number
 OPTIMIZED: Uses in-memory cache for fast invoice lookups (no API calls during reconciliation)
 """
 from datetime import datetime
 from fuzzywuzzy import fuzz
 from database import ReconciliationDB
-from zoho_client import ZohoClient
+from warsoft_client import WarsoftClient
 
 
 class ReconciliationEngine:
-    def __init__(self, db=None, zoho=None, auto_mark_paid=True):
+    def __init__(self, db=None, warsoft=None, auto_write_matched=True):
         self.db = db if db is not None else ReconciliationDB()
-        self.zoho = zoho if zoho is not None else ZohoClient()
-        self.auto_mark_paid = auto_mark_paid
+        self.warsoft = warsoft if warsoft is not None else WarsoftClient()
+        self.auto_write_matched = auto_write_matched
         self.invoice_cache = {}  # In-memory cache for fast lookups
 
     def load_invoice_cache(self):
-        """Load all Zoho invoices from database into memory cache
+        """Load all Warsoft invoices from database into memory cache
 
-        This should be called ONCE after syncing invoices from Zoho.
+        This should be called ONCE after syncing invoices from Warsoft.
         Makes reconciliation 50-100x faster by avoiding database lookups.
         """
         print("📥 Loading invoice cache into memory...")
 
         # Get all invoices from database using the optimized method
-        invoices = self.db.get_all_zoho_invoices()
+        invoices = self.db.get_all_warsoft_invoices()
 
         # Build in-memory lookup dictionary
         self.invoice_cache = {}
@@ -37,7 +37,7 @@ class ReconciliationEngine:
         return len(self.invoice_cache)
 
     def reconcile_payment(self, payment_advice):
-        """Reconcile a single payment advice with Zoho invoice
+        """Reconcile a single payment advice with Warsoft invoice
 
         OPTIMIZED: Uses in-memory cache (no DB/API calls per payment)
         """
@@ -50,16 +50,16 @@ class ReconciliationEngine:
             )
 
         # Check in-memory cache (ultra-fast - no DB or API call!)
-        zoho_invoice = self.invoice_cache.get(invoice_number)
+        warsoft_invoice = self.invoice_cache.get(invoice_number)
 
-        if not zoho_invoice:
+        if not warsoft_invoice:
             return self._create_result(
                 payment_advice, None, 'NOT_FOUND',
-                f'Invoice {invoice_number} not found in Zoho (not in synced invoices)', 0
+                f'Invoice {invoice_number} not found in Warsoft (not in unpaid invoices)', 0
             )
 
         # Perform matching
-        return self._match_payment_with_invoice(payment_advice, zoho_invoice)
+        return self._match_payment_with_invoice(payment_advice, warsoft_invoice)
 
     def _match_payment_with_invoice(self, payment, invoice):
         """Match payment advice with invoice and check for discrepancies"""
@@ -78,13 +78,13 @@ class ReconciliationEngine:
             discrepancies.append(f"Amount mismatch: Payment ₹{payment_amount}, Invoice ₹{invoice_amount}")
             confidence -= 30
 
-        # Invoice status check
+        # Invoice status check (Warsoft statuses: overdue, pending, unpaid, paid)
         invoice_status = invoice['status']
         already_paid = False
 
-        if invoice_status not in ['sent', 'overdue', 'partially_paid', 'draft']:
+        if invoice_status not in ['overdue', 'pending', 'unpaid']:
             if invoice_status == 'paid':
-                discrepancies.append(f"Invoice already marked as PAID in Zoho")
+                discrepancies.append(f"Invoice already marked as PAID in Warsoft")
                 already_paid = True
                 confidence -= 10
             else:
@@ -99,50 +99,78 @@ class ReconciliationEngine:
         else:
             match_status = 'UNMATCHED'
 
-        # AUTO-MARK AS PAID: If perfect match and not already paid and feature enabled
-        if self.auto_mark_paid and match_status == 'MATCHED' and not already_paid and amount_match:
-            # Try to get invoice_id from different possible field names
-            invoice_id = invoice.get('invoice_id') or invoice.get('id')
-            invoice_number = invoice.get('invoice_number')
-            customer_id = invoice.get('customer_id')
-            payment_date = payment.get('payment_date', datetime.now().strftime('%Y-%m-%d'))
-            utr_number = payment.get('utr_number', '')
+        # AUTO-WRITE TO WARSOFT: If perfect match and not already paid and feature enabled
+        if self.auto_write_matched and match_status == 'MATCHED' and not already_paid and amount_match:
+            invoice_number = invoice.get('invoice_number', '')
+            
+            # PRIORITY 1: Get customer_name and invoice_date from Warsoft invoice (more reliable)
+            customer_name = invoice.get('customer_name', '')
+            invoice_date = invoice.get('invoice_date', '')
+            
+            # FALLBACK: If not in Warsoft, try payment advice extraction
+            if not customer_name:
+                customer_name = payment.get('customer_name', 'Unknown Customer')
+            if not invoice_date:
+                invoice_date = payment.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
+            
+            # Get payment-specific fields (these come from payment advice)
+            payment_amount_net = float(payment.get('net_payment_amount') or payment.get('payment_amount') or 0)
+            tds_amount = float(payment.get('tds_amount') or 0)
+            
+            # For total_amount: prefer payment advice bill_amount, fallback to Warsoft total
+            total_amount = float(payment.get('bill_amount') or invoice.get('total_amount') or payment_amount_net)
+            
+            # Payment dates (from payment advice)
+            payment_date = payment.get('payment_date') or datetime.now().strftime('%Y-%m-%d')
+            transaction_date = payment.get('transaction_date') or payment_date
+            
+            # Bank reference (from payment advice)
+            bank_reference = payment.get('bank_reference_number') or payment.get('utr_number', 'N/A')
+            
+            # PDF filename (from payment advice)
+            pdf_filename = payment.get('pdf_filename', 'payment_advice.pdf')
 
-            # Use the invoice's balance amount (what's actually due)
-            balance_due = float(invoice.get('balance_amount', payment_amount))
+            print(f"\n   🔍 WARSOFT WRITE - DATA SOURCE:")
+            print(f"   - Invoice Number: {invoice_number} (from Warsoft)")
+            print(f"   - Customer Name: {customer_name} (from {'Warsoft Invoice' if invoice.get('customer_name') else 'Payment Advice'})")
+            print(f"   - Invoice Date: {invoice_date} (from {'Warsoft Invoice' if invoice.get('invoice_date') else 'Payment Advice'})")
+            print(f"   - Net Payment Amount: ₹{payment_amount_net} (from Payment Advice)")
+            print(f"   - TDS Amount: ₹{tds_amount} (from Payment Advice)")
+            print(f"   - Total Amount: ₹{total_amount} (from Payment Advice)")
+            print(f"   - Transaction Date: {transaction_date} (from Payment Advice)")
+            print(f"   - Bank Reference: {bank_reference} (from Payment Advice)")
+            print(f"   - PDF Filename: {pdf_filename} (from Payment Advice)")
+            print(f"   - Invoice Status: {invoice_status}\n")
 
-            print(f"\n   🔍 DEBUG INFO:")
-            print(f"   - Invoice ID from cache: {invoice_id}")
-            print(f"   - Customer ID: {customer_id}")
-            print(f"   - Invoice Number: {invoice_number}")
-            print(f"   - Payment Advice Amount: ₹{payment_amount}")
-            print(f"   - Invoice Balance Due: ₹{balance_due}")
-            print(f"   - Payment Date: {payment_date}")
-            print(f"   - UTR Number: {utr_number}")
-            print(f"   - Invoice Status: {invoice_status}")
-            print(f"   - Available invoice keys: {list(invoice.keys())}\n")
+            # Validate critical fields
+            if not invoice_number:
+                print("   ⚠️  Cannot write to Warsoft: Missing invoice number")
+                discrepancies.append("⚠️ Cannot write: Missing invoice number")
+            elif not customer_name or customer_name == 'Unknown Customer':
+                print("   ⚠️  Warning: Customer name not found in Warsoft or Payment Advice")
+                discrepancies.append("⚠️ Warning: Customer name missing")
 
-            if not invoice_id:
-                print(f"   ⚠️ Cannot auto-mark as paid: Missing invoice_id in cached invoice")
-                discrepancies.append("⚠️ Cannot auto-mark: Missing invoice ID")
-            elif not customer_id:
-                print(f"   ⚠️ Cannot auto-mark as paid: Missing customer_id in cached invoice")
-                discrepancies.append("⚠️ Cannot auto-mark: Missing customer ID")
+            # Prepare payment data for Warsoft with ALL required fields
+            warsoft_payment_data = {
+                "client_name": customer_name,
+                "invoice_number": invoice_number,
+                "invoice_date": invoice_date,
+                "amount": str(payment_amount_net) if payment_amount_net else "0",
+                "tds": str(tds_amount) if tds_amount else "0",
+                "file_name": pdf_filename,
+                "file_location": "https://",  # Default file location
+                "bank_reference": bank_reference,
+                "total_amount": str(total_amount) if total_amount else "0",
+                "transaction_date": transaction_date
+            }
+
+            # Write to Warsoft
+            success = self.warsoft.write_payment_data(warsoft_payment_data)
+
+            if success:
+                discrepancies.append("✅ WRITTEN TO WARSOFT")
             else:
-                success = self.zoho.auto_mark_invoice_as_paid(
-                    invoice_id=invoice_id,
-                    invoice_number=invoice_number,
-                    payment_amount=balance_due,
-                    payment_date=payment_date,
-                    utr_number=utr_number,
-                    invoice_status=invoice_status,
-                    customer_id=customer_id
-                )
-
-                if success:
-                    discrepancies.append("✅ AUTO-MARKED AS PAID IN ZOHO")
-                else:
-                    discrepancies.append("⚠️ Failed to auto-mark as paid in Zoho")
+                discrepancies.append("⚠️ Failed to write to Warsoft")
 
         discrepancy_notes = '; '.join(discrepancies) if discrepancies else 'No discrepancies found'
 
@@ -156,7 +184,7 @@ class ReconciliationEngine:
         """Create reconciliation result object"""
         return {
             'payment_advice_id': payment.get('id'),
-            'zoho_invoice_id': invoice['id'] if invoice else None,
+            'warsoft_invoice_id': invoice['id'] if invoice else None,
             'invoice_number': payment['invoice_number'],
             'match_status': match_status,
             'amount_match': amount_match,

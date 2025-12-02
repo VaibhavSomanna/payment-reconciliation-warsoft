@@ -9,7 +9,7 @@ import pandas as pd
 from database import ReconciliationDB
 from payment_advice_extractor import PaymentAdviceExtractor
 from reconciliation_engine import ReconciliationEngine
-from zoho_client import ZohoClient
+from warsoft_client import WarsoftClient
 
 
 def generate_excel_report(db):
@@ -113,36 +113,32 @@ def generate_excel_report(db):
     return filename
 
 
-def sync_invoices_from_zoho(db, zoho_client, status_filter=None):
+def sync_invoices_from_warsoft(db, warsoft_client):
     """
-    Sync invoices from Zoho Books into database
-
-    Args:
-        status_filter: 'draft', 'sent', 'overdue', None (all invoices)
+    Sync unpaid invoices from Warsoft into database
     """
-    print(f"\n📥 Syncing invoices from Zoho Books...")
+    print(f"\n📥 Fetching unpaid invoices from Warsoft...")
 
-    if status_filter:
-        invoices = zoho_client.fetch_all_invoices(status_filter=status_filter)
-    else:
-        # Fetch all unpaid/sent invoices by default
-        invoices = zoho_client.fetch_unpaid_invoices()
+    # Fetch all unpaid invoices
+    invoices = warsoft_client.fetch_all_unpaid_invoices()
 
     if not invoices:
-        print("⚠️  No invoices found in Zoho")
+        print("⚠️  No unpaid invoices found in Warsoft")
         return 0
 
     count = 0
-    for invoice in invoices:
+    for invoice_raw in invoices:
         try:
-            db.insert_zoho_invoice(invoice)
+            # Parse invoice to standardized format
+            invoice = warsoft_client.parse_invoice(invoice_raw)
+            db.insert_warsoft_invoice(invoice)
             count += 1
             print(
                 f"   ✅ Synced: {invoice.get('invoice_number')} - ₹{invoice.get('total_amount', 0)} ({invoice.get('status')})")
         except Exception as e:
-            print(f"   ⚠️  Error storing invoice {invoice.get('invoice_number')}: {e}")
+            print(f"   ⚠️  Error storing invoice {invoice_raw.get('invoiceNumber')}: {e}")
 
-    print(f"✅ Synced {count} invoices from Zoho")
+    print(f"✅ Synced {count} unpaid invoices from Warsoft")
     return count
 
 
@@ -240,28 +236,29 @@ def generate_no_invoice_report(db):
 def main():
     """Main reconciliation workflow"""
     print("=" * 70)
-    print("💰 PAYMENT RECONCILIATION SYSTEM")
+    print("💰 PAYMENT RECONCILIATION SYSTEM - WARSOFT INTEGRATION")
     print("=" * 70)
     print("1. 📧 Extract payment advices from email inbox")
-    print("2. 📥 Sync invoices from Zoho Books (draft/sent/all)")
+    print("2. 📥 Sync unpaid invoices from Warsoft")
     print("3. 🔄 Match payment advices with invoices by invoice number")
-    print("4. 📊 Generate Excel report (MATCHED/UNMATCHED/NOT_FOUND)")
+    print("4. 📤 Write matched payments to Warsoft")
+    print("5. 📊 Generate Excel report (MATCHED/UNMATCHED/NOT_FOUND)")
     print("=" * 70)
 
     # Initialize components
     db = ReconciliationDB()
     extractor = PaymentAdviceExtractor()
-    zoho_client = ZohoClient()
-    reconciler = ReconciliationEngine(db, zoho_client)
+    warsoft_client = WarsoftClient()
+    reconciler = ReconciliationEngine(db, warsoft_client)
 
     # Clear old data to start fresh each run
     print("\n🗑️  Clearing previous data...")
     db.clear_payment_advices()
     db.clear_reconciliation_results()
 
-    if not zoho_client.enabled:
-        print("\n❌ Zoho API is not configured. Please set credentials in .env file")
-        print("📋 Required: ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_ORGANIZATION_ID")
+    if not warsoft_client.enabled:
+        print("\n❌ Warsoft API is not configured. Please set credentials in .env file")
+        print("📋 Required: WARSOFT_ACCESS_TOKEN (or ACCESS_TOKEN)")
         return
 
     # Step 1: Extract payment advices from inbox
@@ -292,16 +289,9 @@ def main():
 
         print(f"\n📊 Storage Summary: {stored_count} stored, {skipped_count} duplicates skipped")
 
-    # Step 2: Sync invoices from Zoho (including drafts)
-    print("\n📥 STEP 2: Syncing invoices from Zoho Books...")
-    print("   📋 Fetching draft invoices...")
-    sync_invoices_from_zoho(db, zoho_client, status_filter='draft')
-    print("   📋 Fetching sent/unpaid invoices...")
-    sync_invoices_from_zoho(db, zoho_client, status_filter='sent')
-    print("   📋 Fetching overdue invoices...")
-    sync_invoices_from_zoho(db, zoho_client, status_filter='overdue')
-    print("   📋 Fetching paid invoices...")
-    sync_invoices_from_zoho(db, zoho_client, status_filter='paid')
+    # Step 2: Sync invoices from Warsoft
+    print("\n📥 STEP 2: Syncing unpaid invoices from Warsoft...")
+    sync_invoices_from_warsoft(db, warsoft_client)
 
     # Step 2.5: Load invoice cache into memory for fast reconciliation
     print("\n🚀 OPTIMIZATION: Loading invoice cache into memory...")

@@ -60,23 +60,23 @@ class ReconciliationDB:
                 )
             ''')
 
-            # Zoho Invoices Cache Table
+            # Warsoft Invoices Cache Table
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS zoho_invoices (
+                CREATE TABLE IF NOT EXISTS warsoft_invoices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     invoice_id TEXT UNIQUE,
                     invoice_number TEXT UNIQUE,
-                    customer_id TEXT,
                     customer_name TEXT,
                     invoice_date DATE,
-                    due_date DATE,
+                    sub_total DECIMAL(15,2),
+                    cgst DECIMAL(15,2),
+                    sgst DECIMAL(15,2),
+                    igst DECIMAL(15,2),
                     total_amount DECIMAL(15,2),
                     balance_amount DECIMAL(15,2),
                     status TEXT,
-                    currency_code TEXT,
-                    reference_number TEXT,
                     fetched_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    zoho_raw_json TEXT
+                    warsoft_raw_json TEXT
                 )
             ''')
 
@@ -85,7 +85,7 @@ class ReconciliationDB:
                 CREATE TABLE IF NOT EXISTS reconciliation_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     payment_advice_id INTEGER,
-                    zoho_invoice_id INTEGER,
+                    warsoft_invoice_id INTEGER,
                     invoice_number TEXT,
                     match_status TEXT,
                     amount_match BOOLEAN,
@@ -96,14 +96,14 @@ class ReconciliationDB:
                     reconciled_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     reconciled_by TEXT,
                     FOREIGN KEY (payment_advice_id) REFERENCES payment_advices(id),
-                    FOREIGN KEY (zoho_invoice_id) REFERENCES zoho_invoices(id)
+                    FOREIGN KEY (warsoft_invoice_id) REFERENCES warsoft_invoices(id)
                 )
             ''')
 
             # Create indexes for faster lookups
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_payment_invoice ON payment_advices(invoice_number)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_payment_status ON payment_advices(status)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_zoho_invoice_num ON zoho_invoices(invoice_number)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_warsoft_invoice_num ON warsoft_invoices(invoice_number)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_recon_status ON reconciliation_results(match_status)')
 
             print("✅ Database initialized successfully")
@@ -177,28 +177,28 @@ class ReconciliationDB:
             ))
             return cursor.lastrowid
 
-    def insert_zoho_invoice(self, invoice_data):
-        """Insert or update Zoho invoice record"""
+    def insert_warsoft_invoice(self, invoice_data):
+        """Insert or update Warsoft invoice record"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO zoho_invoices 
-                (invoice_id, invoice_number, customer_id, customer_name, invoice_date, due_date,
-                 total_amount, balance_amount, status, currency_code, reference_number, zoho_raw_json)
+                INSERT OR REPLACE INTO warsoft_invoices 
+                (invoice_id, invoice_number, customer_name, invoice_date,
+                 sub_total, cgst, sgst, igst, total_amount, balance_amount, status, warsoft_raw_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 invoice_data.get('invoice_id'),
                 invoice_data.get('invoice_number'),
-                invoice_data.get('customer_id'),
                 invoice_data.get('customer_name'),
                 invoice_data.get('invoice_date'),
-                invoice_data.get('due_date'),
+                invoice_data.get('sub_total'),
+                invoice_data.get('cgst'),
+                invoice_data.get('sgst'),
+                invoice_data.get('igst'),
                 invoice_data.get('total_amount'),
                 invoice_data.get('balance_amount'),
                 invoice_data.get('status'),
-                invoice_data.get('currency_code'),
-                invoice_data.get('reference_number'),
-                invoice_data.get('zoho_raw_json')
+                invoice_data.get('warsoft_raw_json')
             ))
             return cursor.lastrowid
 
@@ -208,13 +208,13 @@ class ReconciliationDB:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO reconciliation_results 
-                (payment_advice_id, zoho_invoice_id, invoice_number, match_status,
+                (payment_advice_id, warsoft_invoice_id, invoice_number, match_status,
                  amount_match, amount_difference, date_match, confidence_score,
                  discrepancy_notes, reconciled_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 recon_data.get('payment_advice_id'),
-                recon_data.get('zoho_invoice_id'),
+                recon_data.get('warsoft_invoice_id'),
                 recon_data.get('invoice_number'),
                 recon_data.get('match_status'),
                 recon_data.get('amount_match'),
@@ -233,18 +233,18 @@ class ReconciliationDB:
             cursor.execute('SELECT * FROM payment_advices WHERE status = "PENDING"')
             return cursor.fetchall()
 
-    def get_zoho_invoice_by_number(self, invoice_number):
-        """Get Zoho invoice by number"""
+    def get_warsoft_invoice_by_number(self, invoice_number):
+        """Get Warsoft invoice by number"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM zoho_invoices WHERE invoice_number = ?', (invoice_number,))
+            cursor.execute('SELECT * FROM warsoft_invoices WHERE invoice_number = ?', (invoice_number,))
             return cursor.fetchone()
 
-    def get_all_zoho_invoices(self):
-        """Get all Zoho invoices (for in-memory caching)"""
+    def get_all_warsoft_invoices(self):
+        """Get all Warsoft invoices (for in-memory caching)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM zoho_invoices')
+            cursor.execute('SELECT * FROM warsoft_invoices')
             return cursor.fetchall()
 
     def update_payment_status(self, payment_id, status):
@@ -303,13 +303,13 @@ class ReconciliationDB:
                     p.utr_number,
                     p.customer_name as payment_customer_name,
                     p.vendor_name,
-                    z.customer_name as zoho_customer_name,
-                    z.invoice_date as zoho_invoice_date,
-                    z.total_amount as invoice_amount,
-                    z.status as invoice_status
+                    w.customer_name as warsoft_customer_name,
+                    w.invoice_date as warsoft_invoice_date,
+                    w.total_amount as invoice_amount,
+                    w.status as invoice_status
                 FROM reconciliation_results r
                 LEFT JOIN payment_advices p ON r.payment_advice_id = p.id
-                LEFT JOIN zoho_invoices z ON r.zoho_invoice_id = z.id
+                LEFT JOIN warsoft_invoices w ON r.warsoft_invoice_id = w.id
             '''
 
             if date_filter:
@@ -443,14 +443,14 @@ class ReconciliationDB:
                     r.invoice_number, 
                     p.payment_amount, 
                     r.match_status, 
-                    z.invoice_number as zoho_invoice_number, 
-                    z.total_amount as zoho_total, 
+                    w.invoice_number as warsoft_invoice_number, 
+                    w.total_amount as warsoft_total, 
                     r.amount_difference, 
                     r.discrepancy_notes, 
                     r.reconciled_date as reconciliation_date
                 FROM reconciliation_results r
                 LEFT JOIN payment_advices p ON r.payment_advice_id = p.id
-                LEFT JOIN zoho_invoices z ON r.zoho_invoice_id = z.id
+                LEFT JOIN warsoft_invoices w ON r.warsoft_invoice_id = w.id
                 WHERE r.invoice_number = ?
             ''', (invoice_number,))
             return cursor.fetchone()
