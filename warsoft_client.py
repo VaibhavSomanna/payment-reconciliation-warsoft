@@ -124,6 +124,11 @@ class WarsoftClient:
     def fetch_all_unpaid_invoices(self):
         """Fetch all unpaid invoices from Warsoft across all pages
         
+        Supports page range via environment variables:
+        - START_PAGE: Starting page number (default: 1)
+        - END_PAGE: Ending page number (default: unlimited)
+        - MAX_PAGES_TO_FETCH: Max pages from start (legacy support)
+        
         Returns:
             list: Combined list of all unpaid invoices
         """
@@ -132,16 +137,27 @@ class WarsoftClient:
 
         print("\n📥 Fetching all unpaid invoices from Warsoft...")
         
-        # Check for page limit from environment variable
-        max_pages = int(os.getenv('MAX_PAGES_TO_FETCH', 999999))
-        if max_pages < 999999:
-            print(f"   ⚠️  Page limit set to {max_pages} pages (for testing)")
+        # Check for page range from environment variables
+        start_page = int(os.getenv('START_PAGE', '1'))
+        end_page_env = os.getenv('END_PAGE', None)
+        max_pages_env = os.getenv('MAX_PAGES_TO_FETCH', None)
+        
+        if end_page_env:
+            end_page = int(end_page_env)
+        elif max_pages_env:
+            end_page = start_page + int(max_pages_env) - 1
+        else:
+            end_page = 999999
+        
+        if start_page > 1 or end_page < 999999:
+            pages_count = end_page - start_page + 1
+            print(f"   📄 Fetching pages {start_page} to {end_page} ({pages_count} pages)")
         
         all_invoices = []
-        page_no = 1
+        page_no = start_page
         has_more_data = True
         
-        while has_more_data and page_no <= max_pages:
+        while has_more_data and page_no <= end_page:
             invoices = self.fetch_unpaid_invoices(page_no)
             
             if invoices and len(invoices) > 0:
@@ -150,10 +166,11 @@ class WarsoftClient:
             else:
                 has_more_data = False
         
-        if page_no > max_pages:
-            print(f"   ⚠️  Stopped at page limit ({max_pages} pages)")
+        pages_fetched = page_no - start_page
+        if page_no > end_page:
+            print(f"   ⚠️  Reached end page limit ({end_page})")
         
-        print(f"✅ Fetched total of {len(all_invoices)} unpaid invoices from {page_no - 1} page(s)")
+        print(f"✅ Fetched {len(all_invoices)} unpaid invoices from pages {start_page}-{page_no - 1} ({pages_fetched} pages)")
         return all_invoices
 
     def write_payment_data(self, payment_data):
