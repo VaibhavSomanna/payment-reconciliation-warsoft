@@ -103,15 +103,84 @@ class ReconciliationEngine:
         if self.auto_write_matched and match_status == 'MATCHED' and not already_paid and amount_match:
             invoice_number = invoice.get('invoice_number', '')
             
-            # PRIORITY 1: Get customer_name and invoice_date from Warsoft invoice (more reliable)
+            # PRIORITY 1: Get customer_name from Warsoft invoice (more reliable)
             customer_name = invoice.get('customer_name', '')
-            invoice_date = invoice.get('invoice_date', '')
-            
-            # FALLBACK: If not in Warsoft, try payment advice extraction
             if not customer_name:
                 customer_name = payment.get('customer_name', 'Unknown Customer')
-            if not invoice_date:
-                invoice_date = payment.get('invoice_date', datetime.now().strftime('%Y-%m-%d'))
+            
+            # SMART DATE LOGIC: Get invoice_date from Warsoft, determine transaction_date intelligently
+            warsoft_invoice_date = invoice.get('invoice_date', '')
+            
+            # Collect all dates from payment advice
+            payment_advice_dates = []
+            if payment.get('invoice_date'):
+                payment_advice_dates.append(payment.get('invoice_date'))
+            if payment.get('payment_date'):
+                payment_advice_dates.append(payment.get('payment_date'))
+            if payment.get('transaction_date'):
+                payment_advice_dates.append(payment.get('transaction_date'))
+            
+            # Remove duplicates
+            payment_advice_dates = list(set([d for d in payment_advice_dates if d]))
+            
+            print(f"\n   📅 SMART DATE MATCHING:")
+            print(f"   - Dates from payment advice: {payment_advice_dates}")
+            print(f"   - Invoice date from Warsoft: {warsoft_invoice_date}")
+            
+            # Determine transaction_date: If Warsoft invoice_date matches one payment advice date,
+            # the OTHER date is the transaction_date
+            transaction_date = None
+            invoice_date = warsoft_invoice_date
+            
+            if warsoft_invoice_date and warsoft_invoice_date in payment_advice_dates:
+                # Remove the invoice_date, remaining date is transaction_date
+                remaining_dates = [d for d in payment_advice_dates if d != warsoft_invoice_date]
+                if remaining_dates:
+                    transaction_date = remaining_dates[0]
+                    print(f"   ✅ Smart match: Invoice date = {invoice_date}, Transaction date = {transaction_date}")
+                else:
+                    # Only one date found - use invoice date, set transaction date to today
+                    transaction_date = datetime.now().strftime('%Y-%m-%d')
+                    print(f"   ⚠️  Only one date found, using invoice={invoice_date}, transaction=today ({transaction_date})")
+            else:
+                # Fallback: Use dates from payment advice
+                if len(payment_advice_dates) >= 2:
+                    # Sort dates - earlier is invoice, later is transaction
+                    sorted_dates = sorted(payment_advice_dates)
+                    invoice_date = sorted_dates[0] if not warsoft_invoice_date else warsoft_invoice_date
+                    transaction_date = sorted_dates[1]
+                    print(f"   ⚠️  Using payment advice dates: Invoice = {invoice_date}, Transaction = {transaction_date}")
+                elif len(payment_advice_dates) == 1:
+                    if not warsoft_invoice_date:
+                        invoice_date = payment_advice_dates[0]
+                    transaction_date = datetime.now().strftime('%Y-%m-%d')
+                    print(f"   ⚠️  Only one date in payment advice, using invoice={invoice_date}, transaction=today ({transaction_date})")
+                else:
+                    # No dates found anywhere
+                    if not invoice_date:
+                        invoice_date = datetime.now().strftime('%Y-%m-%d')
+                    transaction_date = datetime.now().strftime('%Y-%m-%d')
+                    print(f"   ⚠️  No dates found, using today for both: {invoice_date}")
+            
+            # VALIDATION: Ensure transaction_date > invoice_date (transaction always AFTER invoice, never same)
+            if transaction_date and invoice_date:
+                from datetime import datetime as dt, timedelta
+                inv_dt = dt.strptime(invoice_date, '%Y-%m-%d')
+                trans_dt = dt.strptime(transaction_date, '%Y-%m-%d')
+                
+                if trans_dt <= inv_dt:
+                    # If transaction is same or before invoice, swap them
+                    print(f"   ⚠️  Date issue! Transaction ({transaction_date}) not after Invoice ({invoice_date})")
+                    invoice_date, transaction_date = transaction_date, invoice_date
+                    # Re-parse dates after swap
+                    inv_dt = dt.strptime(invoice_date, '%Y-%m-%d')
+                    trans_dt = dt.strptime(transaction_date, '%Y-%m-%d')
+                    if trans_dt <= inv_dt:
+                        # If still same/before, add 1 day to transaction
+                        transaction_date = (inv_dt + timedelta(days=1)).strftime('%Y-%m-%d')
+                        print(f"   ✅ Corrected: Invoice date = {invoice_date}, Transaction date = {transaction_date} (+1 day)")
+                    else:
+                        print(f"   ✅ Swapped: Invoice date = {invoice_date}, Transaction date = {transaction_date}")
             
             # Get payment-specific fields (these come from payment advice)
             payment_amount_net = float(payment.get('net_payment_amount') or payment.get('payment_amount') or 0)
@@ -120,26 +189,22 @@ class ReconciliationEngine:
             # For total_amount: prefer payment advice bill_amount, fallback to Warsoft total
             total_amount = float(payment.get('bill_amount') or invoice.get('total_amount') or payment_amount_net)
             
-            # Payment dates (from payment advice)
-            payment_date = payment.get('payment_date') or datetime.now().strftime('%Y-%m-%d')
-            transaction_date = payment.get('transaction_date') or payment_date
-            
             # Bank reference (from payment advice)
             bank_reference = payment.get('bank_reference_number') or payment.get('utr_number', 'N/A')
             
             # PDF filename (from payment advice)
             pdf_filename = payment.get('pdf_filename', 'payment_advice.pdf')
 
-            print(f"\n   🔍 WARSOFT WRITE - DATA SOURCE:")
-            print(f"   - Invoice Number: {invoice_number} (from Warsoft)")
-            print(f"   - Customer Name: {customer_name} (from {'Warsoft Invoice' if invoice.get('customer_name') else 'Payment Advice'})")
-            print(f"   - Invoice Date: {invoice_date} (from {'Warsoft Invoice' if invoice.get('invoice_date') else 'Payment Advice'})")
-            print(f"   - Net Payment Amount: ₹{payment_amount_net} (from Payment Advice)")
-            print(f"   - TDS Amount: ₹{tds_amount} (from Payment Advice)")
-            print(f"   - Total Amount: ₹{total_amount} (from Payment Advice)")
-            print(f"   - Transaction Date: {transaction_date} (from Payment Advice)")
-            print(f"   - Bank Reference: {bank_reference} (from Payment Advice)")
-            print(f"   - PDF Filename: {pdf_filename} (from Payment Advice)")
+            print(f"\n   🔍 WARSOFT WRITE - FINAL DATA:")
+            print(f"   - Invoice Number: {invoice_number}")
+            print(f"   - Customer Name: {customer_name}")
+            print(f"   - Invoice Date: {invoice_date}")
+            print(f"   - Transaction Date: {transaction_date}")
+            print(f"   - Net Payment Amount: ₹{payment_amount_net}")
+            print(f"   - TDS Amount: ₹{tds_amount}")
+            print(f"   - Total Amount: ₹{total_amount}")
+            print(f"   - Bank Reference: {bank_reference}")
+            print(f"   - PDF Filename: {pdf_filename}")
             print(f"   - Invoice Status: {invoice_status}\n")
 
             # Validate critical fields
