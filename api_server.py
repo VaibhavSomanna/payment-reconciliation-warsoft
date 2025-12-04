@@ -16,7 +16,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from dotenv import load_dotenv
 
 from payment_advice_extractor import PaymentAdviceExtractor
-from zoho_client import ZohoClient
+from warsoft_client import WarsoftClient
 from reconciliation_engine import ReconciliationEngine
 from database import ReconciliationDB
 
@@ -92,7 +92,7 @@ async def get_results():
     # Get summary statistics
     total_invoices = len(results)
     matched = sum(1 for r in results if r[2] == "MATCHED")  # match_status is index 2
-    not_found = sum(1 for r in results if r[2] == "NOT_FOUND" or r[2] == "NOT_FOUND_IN_ZOHO")
+    not_found = sum(1 for r in results if r[2] == "NOT_FOUND" or r[2] == "NOT_FOUND_IN_WARSOFT")
     amount_mismatch = sum(1 for r in results if r[2] in ["AMOUNT_MISMATCH", "UNMATCHED", "PARTIAL_MATCH"])
 
     return {
@@ -109,8 +109,8 @@ async def get_results():
                 "status": r[2],  # match_status
                 "payment_amount": r[12] or 0,  # payment_amount
                 "bank_name": r[16] or "",  # bank_name
-                "zoho_invoice_number": r[1],  # use same invoice_number
-                "zoho_total": r[21] or 0,  # invoice_amount
+                "warsoft_invoice_number": r[1],  # use same invoice_number
+                "warsoft_total": r[21] or 0,  # invoice_amount
                 "amount_difference": r[5] or 0,  # amount_difference
                 "notes": r[7] or "",  # discrepancy_notes
                 "reconciliation_date": r[8]  # reconciled_date
@@ -215,7 +215,7 @@ async def download_excel():
             unmatched_df.to_excel(writer, sheet_name='UNMATCHED', index=False)
 
         # Sheet 3: NOT_FOUND
-        not_found_df = df[df['match_status'].isin(['NOT_FOUND', 'NOT_FOUND_IN_ZOHO'])].copy()
+        not_found_df = df[df['match_status'].isin(['NOT_FOUND', 'NOT_FOUND_IN_WARSOFT'])].copy()
         if not not_found_df.empty:
             not_found_df.to_excel(writer, sheet_name='NOT_FOUND', index=False)
 
@@ -287,8 +287,8 @@ async def run_reconciliation(days_back: int, auto_mark_paid: bool = True):
         # Initialize components
         db = ReconciliationDB()
         extractor = PaymentAdviceExtractor()
-        zoho = ZohoClient()
-        engine = ReconciliationEngine(db=db, zoho=zoho, auto_mark_paid=auto_mark_paid)
+        warsoft = WarsoftClient()
+        engine = ReconciliationEngine(db=db, warsoft=warsoft, auto_write_matched=auto_mark_paid)
 
         # Clear previous data
         db.clear_payment_advices()
@@ -305,30 +305,13 @@ async def run_reconciliation(days_back: int, auto_mark_paid: bool = True):
         for advice in payment_advices:
             db.insert_payment_advice(advice)
 
-        # Fetch Zoho invoices
+        # Fetch Warsoft invoices
         reconciliation_status["progress"] = 50
-        reconciliation_status["status_message"] = "Syncing Zoho invoices (draft)..."
-        draft_invoices = zoho.fetch_all_invoices(status_filter='draft')
-        for inv in draft_invoices:
-            db.insert_zoho_invoice(inv)
-
-        reconciliation_status["progress"] = 55
-        reconciliation_status["status_message"] = "Syncing Zoho invoices (sent)..."
-        sent_invoices = zoho.fetch_all_invoices(status_filter='sent')
-        for inv in sent_invoices:
-            db.insert_zoho_invoice(inv)
-
-        reconciliation_status["progress"] = 60
-        reconciliation_status["status_message"] = "Syncing Zoho invoices (overdue)..."
-        overdue_invoices = zoho.fetch_all_invoices(status_filter='overdue')
-        for inv in overdue_invoices:
-            db.insert_zoho_invoice(inv)
-
-        reconciliation_status["progress"] = 65
-        reconciliation_status["status_message"] = "Syncing Zoho invoices (paid)..."
-        paid_invoices = zoho.fetch_all_invoices(status_filter='paid')
-        for inv in paid_invoices:
-            db.insert_zoho_invoice(inv)
+        reconciliation_status["status_message"] = "Syncing Warsoft unpaid invoices..."
+        unpaid_invoices = warsoft.fetch_all_unpaid_invoices()
+        for inv_data in unpaid_invoices:
+            inv = warsoft.parse_invoice(inv_data)
+            db.insert_warsoft_invoice(inv)
 
         # Load invoice cache for fast reconciliation
         reconciliation_status["progress"] = 70
@@ -349,7 +332,7 @@ async def run_reconciliation(days_back: int, auto_mark_paid: bool = True):
         total = len(reconciliation_results)
         matched = sum(1 for r in reconciliation_results if r.get('match_status') == 'MATCHED')
         not_found = sum(
-            1 for r in reconciliation_results if r.get('match_status') in ['NOT_FOUND', 'NOT_FOUND_IN_ZOHO'])
+            1 for r in reconciliation_results if r.get('match_status') in ['NOT_FOUND', 'NOT_FOUND_IN_WARSOFT'])
         amount_mismatch = sum(1 for r in reconciliation_results if
                               r.get('match_status') in ['AMOUNT_MISMATCH', 'UNMATCHED', 'PARTIAL_MATCH'])
 

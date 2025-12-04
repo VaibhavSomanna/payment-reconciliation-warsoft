@@ -5,7 +5,7 @@ import './App.css';
 
 function App() {
   const [searchDate, setSearchDate] = useState(new Date().toISOString().split('T')[0]); // Today
-  const [maxEmails, setMaxEmails] = useState(100); // Keep as fallback
+  const [maxEmails, setMaxEmails] = useState(100000); // Keep as fallback
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('Ready');
@@ -130,7 +130,7 @@ function App() {
         case 'MATCHED':
           return r.status === 'MATCHED';
         case 'NOT_FOUND':
-          return r.status === 'NOT_FOUND' || r.status === 'NOT_FOUND_IN_ZOHO';
+          return r.status === 'NOT_FOUND' || r.status === 'NOT_FOUND_IN_WARSOFT';
         case 'MISMATCH':
           return r.status === 'AMOUNT_MISMATCH' || r.status === 'UNMATCHED' || r.status === 'PARTIAL_MATCH';
         default:
@@ -142,7 +142,7 @@ function App() {
   const getStatusColor = (status) => {
     switch (status) {
       case 'MATCHED': return '#10b981';
-      case 'NOT_FOUND_IN_ZOHO': return '#f59e0b';
+      case 'NOT_FOUND_IN_WARSOFT': return '#f59e0b';
       case 'AMOUNT_MISMATCH': return '#ef4444';
       default: return '#6b7280';
     }
@@ -151,7 +151,7 @@ function App() {
   const getStatusIcon = (status) => {
     switch (status) {
       case 'MATCHED': return <CheckCircle size={16} />;
-      case 'NOT_FOUND_IN_ZOHO': return <AlertCircle size={16} />;
+      case 'NOT_FOUND_IN_WARSOFT': return <AlertCircle size={16} />;
       case 'AMOUNT_MISMATCH': return <XCircle size={16} />;
       default: return <FileText size={16} />;
     }
@@ -213,7 +213,7 @@ function App() {
                   className="toggle-checkbox"
                 />
                 <span className="toggle-text">
-                  Auto-mark matched invoices as PAID in Zoho
+                  Auto-write matched invoices to Warsoft
                 </span>
               </label>
             </div>
@@ -283,7 +283,7 @@ function App() {
                     </div>
                     <div className="stat-card not-found" onClick={() => handleFilterClick('NOT_FOUND')}>
                       <AlertCircle size={24} />
-                      <h3>Not Found in Zoho</h3>
+                      <h3>Not Found in Warsoft</h3>
                       <p className="stat-number">{results.summary.not_found}</p>
                     </div>
                     <div className="stat-card mismatch" onClick={() => handleFilterClick('MISMATCH')}>
@@ -303,7 +303,7 @@ function App() {
                             <th>Payment Amount</th>
                             <th>Bank Name</th>
                             <th>Status</th>
-                            <th>Zoho Invoice</th>
+                            <th>Warsoft Invoice</th>
                             <th>Notes</th>
                           </tr>
                         </thead>
@@ -322,7 +322,7 @@ function App() {
                                   {result.status.replace(/_/g, ' ')}
                                 </span>
                               </td>
-                              <td>{result.zoho_invoice_number || '-'}</td>
+                              <td>{result.warsoft_invoice_number || result.invoice_number || '-'}</td>
                               <td className="notes">{result.notes || '-'}</td>
                             </tr>
                           ))}
@@ -363,8 +363,8 @@ function App() {
                         <th>Payment Amount</th>
                         <th>Bank Name</th>
                         <th>Status</th>
-                        <th>Zoho Invoice</th>
-                        <th>Zoho Total</th>
+                        <th>Warsoft Invoice</th>
+                        <th>Warsoft Total</th>
                         <th>Difference</th>
                         <th>Notes</th>
                         <th>Date</th>
@@ -385,9 +385,9 @@ function App() {
                               {result.status.replace(/_/g, ' ')}
                             </span>
                           </td>
-                          <td>{result.zoho_invoice_number || '-'}</td>
+                          <td>{result.warsoft_invoice_number || result.invoice_number || '-'}</td>
                           <td className="amount">
-                            {result.zoho_total ? `₹${parseFloat(result.zoho_total).toFixed(2)}` : '-'}
+                            {result.warsoft_total ? `₹${parseFloat(result.warsoft_total).toFixed(2)}` : '-'}
                           </td>
                           <td className="amount">
                             {result.amount_difference ? `₹${Math.abs(parseFloat(result.amount_difference)).toFixed(2)}` : '-'}
