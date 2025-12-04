@@ -47,6 +47,8 @@ class ReconciliationRequest(BaseModel):
     max_emails: int = 1000000
     days_back: int = 7
     auto_mark_paid: bool = True
+    start_page: int = 1
+    end_page: int = 999999
 
 
 class InvoiceSearchRequest(BaseModel):
@@ -71,14 +73,20 @@ async def start_reconciliation(request: ReconciliationRequest, background_tasks:
     if reconciliation_status["is_running"]:
         raise HTTPException(status_code=400, detail="Reconciliation is already running")
 
-    # Update environment variable
+    # Update environment variables
     os.environ['MAX_EMAILS_TO_PROCESS'] = str(request.max_emails)
+    os.environ['START_PAGE'] = str(request.start_page)
+    os.environ['END_PAGE'] = str(request.end_page)
 
     # Start reconciliation in background
     background_tasks.add_task(run_reconciliation, request.days_back, request.auto_mark_paid)
 
-    return {"message": "Reconciliation started", "max_emails": request.max_emails,
-            "auto_mark_paid": request.auto_mark_paid}
+    return {
+        "message": "Reconciliation started",
+        "max_emails": request.max_emails,
+        "auto_mark_paid": request.auto_mark_paid,
+        "warsoft_pages": f"{request.start_page}-{request.end_page}"
+    }
 
 
 @app.get("/api/results")

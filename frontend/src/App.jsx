@@ -13,6 +13,8 @@ function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [statusFilter, setStatusFilter] = useState(null); // null = show all
   const [autoMarkPaid, setAutoMarkPaid] = useState(true); // Auto-mark matched invoices as paid
+  const [startPage, setStartPage] = useState('');
+  const [endPage, setEndPage] = useState('');
 
   // Poll status while reconciliation is running
   useEffect(() => {
@@ -73,7 +75,9 @@ function App() {
       await axios.post('/api/reconcile', {
         max_emails: maxEmails,
         days_back: daysBack,
-        auto_mark_paid: autoMarkPaid
+        auto_mark_paid: autoMarkPaid,
+        start_page: parseInt(startPage) || 1,
+        end_page: parseInt(endPage) || 100
       });
       setIsRunning(true);
       setProgress(0);
@@ -183,59 +187,96 @@ function App() {
       <main className="main-content">
         {/* Control Panel */}
         <div className="control-panel">
-          <div className="control-section">
-            <label htmlFor="searchDate">Select Date to Search Emails:</label>
-            <div className="date-search-container">
-              <input
-                id="searchDate"
-                type="date"
-                value={searchDate}
-                onChange={(e) => setSearchDate(e.target.value)}
-                max={new Date().toISOString().split('T')[0]}
-                disabled={isRunning}
-                className="date-input"
-              />
-              {searchDate && (
-                <span className="date-info-text">
-                  Will search emails from {new Date(searchDate).toLocaleDateString()} to today ({calculateDaysBack()} day{calculateDaysBack() !== 1 ? 's' : ''})
-                </span>
-              )}
+          <div className="control-section-grid">
+            {/* Warsoft Page Range - LEFT SIDE */}
+            <div className="page-range-container">
+              <label>Matching invoice data from Warsoft Page {startPage}-{endPage}</label>
+              <div className="page-range-inputs">
+                <div className="input-group">
+                  <label htmlFor="startPage">From:</label>
+                  <input
+                    id="startPage"
+                    type="number"
+                    value={startPage}
+                    onChange={(e) => setStartPage(e.target.value)}
+                    min="1"
+                    disabled={isRunning}
+                    className="page-input"
+                    placeholder="Start page"
+                  />
+                </div>
+                <div className="input-group">
+                  <label htmlFor="endPage">To:</label>
+                  <input
+                    id="endPage"
+                    type="number"
+                    value={endPage}
+                    onChange={(e) => setEndPage(e.target.value)}
+                    min="1"
+                    disabled={isRunning}
+                    className="page-input"
+                    placeholder="End page"
+                  />
+                </div>
+              </div>
             </div>
 
-            {/* Auto-Mark Paid Toggle */}
-            <div className="toggle-container">
-              <label className="toggle-label">
+            {/* Email Date Range - RIGHT SIDE */}
+            <div className="date-range-container">
+              <label htmlFor="searchDate">Email Date Range:</label>
+              <div className="date-search-container">
                 <input
-                  type="checkbox"
-                  checked={autoMarkPaid}
-                  onChange={(e) => setAutoMarkPaid(e.target.checked)}
+                  id="searchDate"
+                  type="date"
+                  value={searchDate}
+                  onChange={(e) => setSearchDate(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
                   disabled={isRunning}
-                  className="toggle-checkbox"
+                  className="date-input"
                 />
-                <span className="toggle-text">
-                  Auto-write matched invoices to Warsoft
-                </span>
-              </label>
+                {searchDate && (
+                  <span className="date-info-text">
+                    Will search emails from {new Date(searchDate).toLocaleDateString()} to today ({calculateDaysBack()} day{calculateDaysBack() !== 1 ? 's' : ''})
+                  </span>
+                )}
+              </div>
             </div>
 
-            <button
-              onClick={startReconciliation}
-              disabled={isRunning || !searchDate}
-              className="btn btn-primary"
-            >
-              {isRunning ? (
-                <>
-                  <Loader2 size={18} className="spinner" />
-                  Processing...
-                </>
-              ) : (
-                <>
-                  <PlayCircle size={18} />
-                  Start Reconciliation
-                </>
-              )}
-            </button>
           </div>
+
+          {/* Auto-Mark Paid Toggle */}
+          <div className="toggle-container">
+            <label className="toggle-label">
+              <input
+                type="checkbox"
+                checked={autoMarkPaid}
+                onChange={(e) => setAutoMarkPaid(e.target.checked)}
+                disabled={isRunning}
+                className="toggle-checkbox"
+              />
+              <span className="toggle-text">
+                Write matched invoices to Warsoft
+              </span>
+            </label>
+          </div>
+
+          <button
+            onClick={startReconciliation}
+            disabled={isRunning || !searchDate}
+            className="btn btn-primary"
+          >
+            {isRunning ? (
+              <>
+                <Loader2 size={18} className="spinner" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <PlayCircle size={18} />
+                Start Reconciliation
+              </>
+            )}
+          </button>
         </div>
 
         {/* Progress Bar */}
