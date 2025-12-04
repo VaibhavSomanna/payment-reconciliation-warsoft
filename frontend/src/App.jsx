@@ -300,10 +300,10 @@ function App() {
                         <thead>
                           <tr>
                             <th>Invoice Number</th>
-                            <th>Payment Amount</th>
-                            <th>Bank Name</th>
+                            <th>Gross Amount</th>
+                            <th>TDS</th>
+                            <th>Bank Reference</th>
                             <th>Status</th>
-                            <th>Warsoft Invoice</th>
                             <th>Notes</th>
                           </tr>
                         </thead>
@@ -311,8 +311,9 @@ function App() {
                           {results.results.slice(0, 10).map((result) => (
                             <tr key={result.id}>
                               <td className="invoice-number">{result.invoice_number}</td>
-                              <td className="amount">₹{parseFloat(result.payment_amount || 0).toFixed(2)}</td>
-                              <td>{result.bank_name || '-'}</td>
+                              <td className="amount">₹{parseFloat(result.gross_amount || 0).toFixed(2)}</td>
+                              <td className="amount">₹{parseFloat(result.tds || 0).toFixed(2)}</td>
+                              <td>{result.bank_reference || '-'}</td>
                               <td>
                                 <span
                                   className="status-badge"
@@ -322,7 +323,6 @@ function App() {
                                   {result.status.replace(/_/g, ' ')}
                                 </span>
                               </td>
-                              <td>{result.warsoft_invoice_number || result.invoice_number || '-'}</td>
                               <td className="notes">{result.notes || '-'}</td>
                             </tr>
                           ))}
@@ -360,12 +360,10 @@ function App() {
                     <thead>
                       <tr>
                         <th>Invoice Number</th>
-                        <th>Payment Amount</th>
-                        <th>Bank Name</th>
+                        <th>Gross Amount</th>
+                        <th>TDS</th>
+                        <th>Bank Reference</th>
                         <th>Status</th>
-                        <th>Warsoft Invoice</th>
-                        <th>Warsoft Total</th>
-                        <th>Difference</th>
                         <th>Notes</th>
                         <th>Date</th>
                       </tr>
@@ -374,8 +372,9 @@ function App() {
                       {getFilteredResults().map((result) => (
                         <tr key={result.id}>
                           <td className="invoice-number">{result.invoice_number}</td>
-                          <td className="amount">₹{parseFloat(result.payment_amount || 0).toFixed(2)}</td>
-                          <td>{result.bank_name || '-'}</td>
+                          <td className="amount">₹{parseFloat(result.gross_amount || 0).toFixed(2)}</td>
+                          <td className="amount">₹{parseFloat(result.tds || 0).toFixed(2)}</td>
+                          <td>{result.bank_reference || '-'}</td>
                           <td>
                             <span
                               className="status-badge"
@@ -384,13 +383,6 @@ function App() {
                               {getStatusIcon(result.status)}
                               {result.status.replace(/_/g, ' ')}
                             </span>
-                          </td>
-                          <td>{result.warsoft_invoice_number || result.invoice_number || '-'}</td>
-                          <td className="amount">
-                            {result.warsoft_total ? `₹${parseFloat(result.warsoft_total).toFixed(2)}` : '-'}
-                          </td>
-                          <td className="amount">
-                            {result.amount_difference ? `₹${Math.abs(parseFloat(result.amount_difference)).toFixed(2)}` : '-'}
                           </td>
                           <td className="notes">{result.notes || '-'}</td>
                           <td>{result.reconciliation_date ? new Date(result.reconciliation_date).toLocaleDateString() : '-'}</td>

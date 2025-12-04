@@ -91,9 +91,9 @@ async def get_results():
 
     # Get summary statistics
     total_invoices = len(results)
-    matched = sum(1 for r in results if r[2] == "MATCHED")  # match_status is index 2
-    not_found = sum(1 for r in results if r[2] == "NOT_FOUND" or r[2] == "NOT_FOUND_IN_WARSOFT")
-    amount_mismatch = sum(1 for r in results if r[2] in ["AMOUNT_MISMATCH", "UNMATCHED", "PARTIAL_MATCH"])
+    matched = sum(1 for r in results if r['match_status'] == "MATCHED")
+    not_found = sum(1 for r in results if r['match_status'] == "NOT_FOUND" or r['match_status'] == "NOT_FOUND_IN_WARSOFT")
+    amount_mismatch = sum(1 for r in results if r['match_status'] in ["AMOUNT_MISMATCH", "UNMATCHED", "PARTIAL_MATCH"])
 
     return {
         "summary": {
@@ -104,16 +104,14 @@ async def get_results():
         },
         "results": [
             {
-                "id": r[0],  # recon_id
-                "invoice_number": r[1],  # invoice_number
-                "status": r[2],  # match_status
-                "payment_amount": r[12] or 0,  # payment_amount
-                "bank_name": r[16] or "",  # bank_name
-                "warsoft_invoice_number": r[1],  # use same invoice_number
-                "warsoft_total": r[21] or 0,  # invoice_amount
-                "amount_difference": r[5] or 0,  # amount_difference
-                "notes": r[7] or "",  # discrepancy_notes
-                "reconciliation_date": r[8]  # reconciled_date
+                "id": r['recon_id'],
+                "invoice_number": r['invoice_number'],
+                "status": r['match_status'],
+                "gross_amount": float(r['bill_amount'] or 0),  # Gross amount (before TDS)
+                "tds": float(r['tds_amount'] or 0),  # TDS amount
+                "bank_reference": r['bank_reference_number'] or r['utr_number'] or '-',  # Bank reference
+                "notes": r['discrepancy_notes'] or '',
+                "reconciliation_date": r['reconciled_date']
             }
             for r in results
         ]
