@@ -52,25 +52,28 @@ class OpenAIPaymentExtractor:
             # Check if encrypted
             if pdf_reader.is_encrypted:
                 print(f"   🔒 PDF is password-protected, attempting to decrypt...")
-                
-                # Try each password
-                for password in self.pdf_passwords:
+
+                # Try empty password first, then configured passwords
+                candidate_passwords = [''] + self.pdf_passwords
+
+                for password in candidate_passwords:
                     try:
                         if pdf_reader.decrypt(password):
-                            print(f"   ✅ PDF decrypted successfully with password: {password[:3]}***")
-                            
+                            masked = password[:3] + '***' if password else '<empty>'
+                            print(f"   ✅ PDF decrypted successfully with password: {masked}")
+
                             # Create a new PDF writer and copy decrypted content
                             pdf_writer = PyPDF2.PdfWriter()
                             for page in pdf_reader.pages:
                                 pdf_writer.add_page(page)
-                            
+
                             # Write to bytes
                             decrypted_bytes = io.BytesIO()
                             pdf_writer.write(decrypted_bytes)
                             decrypted_bytes.seek(0)
-                            
+
                             return decrypted_bytes.read()
-                    except Exception as e:
+                    except Exception:
                         continue
                 
                 print(f"   ❌ Could not decrypt PDF with provided passwords")
@@ -101,6 +104,12 @@ class OpenAIPaymentExtractor:
             if decrypted_pdf is None:
                 print(f"   ❌ Failed to decrypt PDF")
                 return None
+
+            try:
+                page_count = len(PyPDF2.PdfReader(io.BytesIO(decrypted_pdf)).pages)
+                print(f"   📑 PDF page count after decrypt: {page_count}")
+            except Exception as e:
+                print(f"   ⚠️  Could not read PDF page count: {e}")
             
             # Convert PDF to base64
             pdf_base64 = base64.standard_b64encode(decrypted_pdf).decode('utf-8')
@@ -108,7 +117,7 @@ class OpenAIPaymentExtractor:
             # Detailed extraction prompt
             prompt = """You are a financial document processing AI. Extract ALL payment details from this payment advice PDF.
 
-IMPORTANT: This PDF may contain MULTIPLE invoices. Extract EACH invoice as a separate entry.
+IMPORTANT: This PDF may contain MULTIPLE invoices across MULTIPLE PAGES. Extract EACH invoice as a separate entry.
 
 Return ONLY a valid JSON object with this structure:
 
@@ -135,14 +144,17 @@ Return ONLY a valid JSON object with this structure:
 
 CRITICAL EXTRACTION RULES:
 
-1. MULTIPLE INVOICES: 
-   - If the PDF has a table with multiple invoice rows, extract EACH row as a separate invoice entry
+1. MULTIPLE INVOICES ACROSS PAGES: 
+   - SCAN ALL PAGES of the PDF - invoices may be on page 1, 2, 3, etc.
+   - If the PDF has tables spanning multiple pages, extract EACH row as a separate invoice
    - Each invoice should have its OWN: invoice_number, net_payment_amount, bill_amount, tds_amount, invoice_date
    - Look for table structures with columns like: Invoice No, Date, Bill Amt, TDS, Amount, etc.
+   - DO NOT STOP after the first page - continue extracting from ALL pages
 
 2. Invoice numbers: Look for formats like "23EXT1126/1572", "11HB234/5678", "15HBT567/8901"
    - If invoice split across lines (e.g., "23EXT1126/\\n1572"), combine them as "23EXT1126/1572"
    - Common prefixes: EXT, HB, HBT
+   - Invoice numbers may appear on ANY page of the PDF
 
 3. Amounts (extract as numbers only, no currency symbols, no commas):
    - net_payment_amount: Final payment after TDS (often labeled "Amount", "Net Paid", "Current Net Paid")
@@ -151,7 +163,7 @@ CRITICAL EXTRACTION RULES:
    - Example: "8,644.00" should be "8644.00"
 
 4. Dates (convert all to YYYY-MM-DD):
-   - transaction_date: Payment/advice date at the TOP of the document
+   - transaction_date: Payment/advice date at the TOP of the document (page 1)
    - invoice_date: Date specific to each invoice (usually in the table row)
 
 5. Bank reference: Look for long alphanumeric codes like:
@@ -160,7 +172,7 @@ CRITICAL EXTRACTION RULES:
 
 6. Customer name: Look for "Remitter Name", "From", "Sender", "Payer", "Customer Name"
 
-Be thorough - extract EVERY invoice in the document as a separate entry in the invoices array."""
+Be thorough - extract EVERY invoice from EVERY page in the document as a separate entry in the invoices array."""
 
             # Call OpenAI API with native PDF support
             response = self.client.chat.completions.create(
@@ -181,7 +193,7 @@ Be thorough - extract EVERY invoice in the document as a separate entry in the i
                     }
                 ],
                 response_format={"type": "json_object"},
-                max_tokens=2000,
+                max_tokens=4000,
                 temperature=0
             )
             
