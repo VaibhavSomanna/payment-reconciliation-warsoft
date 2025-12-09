@@ -10,7 +10,8 @@ from email.header import decode_header
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-from openai_extractor import OpenAIPaymentExtractor
+
+from openai_extractor import AzureOpenAIPaymentExtractor
 
 load_dotenv()
 
@@ -29,7 +30,7 @@ PAYMENT_KEYWORDS = [
 class PaymentAdviceExtractor:
     def __init__(self):
         # Only OpenAI extractor; fail fast if not configured
-        self.openai_extractor = OpenAIPaymentExtractor()
+        self.openai_extractor = AzureOpenAIPaymentExtractor()
 
     def is_payment_advice_email(self, subject, body):
         """Lightweight heuristic to decide if an email is a payment advice."""
@@ -52,7 +53,7 @@ class PaymentAdviceExtractor:
             content_type = part.get_content_type()
             content_encoding = part.get('Content-Transfer-Encoding', '')
             filename = part.get_filename()
-                
+
             # Decode filename if it's encoded (e.g., =?utf-8?B?...?=)
             if filename:
                 try:
@@ -66,14 +67,15 @@ class PaymentAdviceExtractor:
                     filename = decoded_filename
                 except Exception:
                     pass  # Keep original filename if decoding fails
-            
+
             # Decode payload size early for debugging (without re-decoding twice)
             payload = part.get_payload(decode=True)
             size = len(payload) if payload else 0
 
             # Debug: show all parts with size and encoding
-            print(f"   🔍 Part - Type: {content_type}, Disp: {content_disposition}, Enc: {content_encoding}, Filename: {filename}, Size: {size} bytes")
-                
+            print(
+                f"   🔍 Part - Type: {content_type}, Disp: {content_disposition}, Enc: {content_encoding}, Filename: {filename}, Size: {size} bytes")
+
             # If this is a nested email, recurse into it
             if content_type == 'message/rfc822' and payload:
                 try:
@@ -136,12 +138,18 @@ class PaymentAdviceExtractor:
             print(f"❌ OpenAI extraction failed: {e}")
             return []
 
-        if not openai_result or not openai_result.get('invoices'):
-            print("⚠️  OpenAI returned no invoices; skipping email")
+        if not openai_result:
+            print("⚠️  OpenAI returned no result; skipping email")
             return []
 
         invoices = openai_result.get('invoices', []) or []
         common_details = openai_result.get('common_details', {}) or {}
+
+        # If no invoices were parsed but we have common details (amounts/dates/refs),
+        # emit a placeholder record instead of skipping entirely.
+        if not invoices and common_details:
+            print("⚠️  OpenAI returned no invoices; creating placeholder entry with common details")
+            invoices = [{}]
 
         payment_data_list = []
         for idx, invoice in enumerate(invoices, 1):
@@ -163,7 +171,8 @@ class PaymentAdviceExtractor:
                 'bill_amount': bill_amount,
                 'tds_amount': tds_amount,
                 'bank_name': common_details.get('bank_name'),
-                'bank_reference_number': common_details.get('bank_reference_number') or common_details.get('utr_number'),
+                'bank_reference_number': common_details.get('bank_reference_number') or common_details.get(
+                    'utr_number'),
                 'transaction_reference': None,
                 'utr_number': common_details.get('utr_number') or common_details.get('bank_reference_number'),
                 'customer_name': common_details.get('customer_name'),

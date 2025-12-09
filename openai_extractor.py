@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-OpenAI GPT-4o mini extractor for payment advice PDFs
+Azure OpenAI GPT-4o mini extractor for payment advice PDFs
 Supports password-protected PDFs
+Uses Responses API as per Microsoft Learn documentation
 """
 import os
 import base64
@@ -14,41 +15,52 @@ import PyPDF2
 load_dotenv()
 
 
-class OpenAIPaymentExtractor:
+class AzureOpenAIPaymentExtractor:
     def __init__(self):
-        api_key = os.getenv('OPENAI_API_KEY')
+        api_key = os.getenv('AZURE_OPENAI_API_KEY')
+        base_url = os.getenv('AZURE_OPENAI_BASE_URL')
+
         if not api_key:
-            raise ValueError("OPENAI_API_KEY not found in .env file")
-        
-        self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+            raise ValueError("AZURE_OPENAI_API_KEY not found in .env file")
+        if not base_url:
+            raise ValueError(
+                "AZURE_OPENAI_BASE_URL not found in .env file (format: https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/)")
+
+        self.client = OpenAI(
+            base_url=base_url,
+            api_key=api_key
+        )
+        # This should be your deployment name, not the model name
+        self.deployment_name = os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME', 'gpt-4o-mini')
         self.total_cost = 0.0
-        
+
         # GPT-4o mini pricing (per 1M tokens)
         self.input_cost_per_1m = 0.150
         self.output_cost_per_1m = 0.600
-        
+
         # PDF passwords from .env
         self.pdf_passwords = [
             os.getenv('PDF_PASSWORD_1', '253538'),
             os.getenv('PDF_PASSWORD_2', '502000')
         ]
-        
-        print(f"✅ OpenAI Payment Extractor initialized (model: {self.model})")
-    
+
+        print(f"✅ Azure OpenAI Payment Extractor initialized (Responses API)")
+        print(f"   🌐 Base URL: {base_url}")
+        print(f"   📦 Deployment: {self.deployment_name}")
+
     def decrypt_pdf(self, pdf_data):
         """Decrypt password-protected PDF
-        
+
         Args:
             pdf_data: Binary PDF data (encrypted)
-            
+
         Returns:
             bytes: Decrypted PDF data or original if not encrypted
         """
         try:
             # Try to read the PDF
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(pdf_data))
-            
+
             # Check if encrypted
             if pdf_reader.is_encrypted:
                 print(f"   🔒 PDF is password-protected, attempting to decrypt...")
@@ -75,30 +87,30 @@ class OpenAIPaymentExtractor:
                             return decrypted_bytes.read()
                     except Exception:
                         continue
-                
+
                 print(f"   ❌ Could not decrypt PDF with provided passwords")
                 return None
             else:
                 print(f"   ℹ️  PDF is not encrypted")
                 return pdf_data
-                
+
         except Exception as e:
             print(f"   ⚠️  Error checking PDF encryption: {e}")
             # Return original data if we can't check encryption
             return pdf_data
-    
+
     def extract_from_pdf(self, pdf_data):
-        """Extract payment advice data using GPT-4o mini with native PDF support
-        
+        """Extract payment advice data using Azure OpenAI Responses API
+
         Args:
             pdf_data: Binary PDF data (may be encrypted)
-            
+
         Returns:
             dict: Extracted payment advice data or None if extraction fails
         """
         try:
-            print(f"   🤖 Starting OpenAI extraction...")
-            
+            print(f"   🤖 Starting Azure OpenAI extraction (Responses API)...")
+
             # Decrypt PDF if needed
             decrypted_pdf = self.decrypt_pdf(pdf_data)
             if decrypted_pdf is None:
@@ -110,10 +122,10 @@ class OpenAIPaymentExtractor:
                 print(f"   📑 PDF page count after decrypt: {page_count}")
             except Exception as e:
                 print(f"   ⚠️  Could not read PDF page count: {e}")
-            
+
             # Convert PDF to base64
             pdf_base64 = base64.standard_b64encode(decrypted_pdf).decode('utf-8')
-            
+
             # Detailed extraction prompt
             prompt = """You are a financial document processing AI. Extract ALL payment details from this payment advice PDF.
 
@@ -174,122 +186,138 @@ CRITICAL EXTRACTION RULES:
 
 Be thorough - extract EVERY invoice from EVERY page in the document as a separate entry in the invoices array."""
 
-            # Call OpenAI API with native PDF support
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            # Call Azure OpenAI Responses API (exact format from Microsoft Learn docs)
+            response = self.client.responses.create(
+                model=self.deployment_name,  # This is your deployment name
+                input=[
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt},
                             {
-                                "type": "file",
-                                "file": {
-                                    "filename": "payment_advice.pdf",
-                                    "file_data": f"data:application/pdf;base64,{pdf_base64}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                response_format={"type": "json_object"},
-                max_tokens=4000,
-                temperature=0
+                                "type": "input_file",
+                                "filename": "payment_advice.pdf",
+                                "file_data": f"data:application/pdf;base64,{pdf_base64}",
+                            },
+                            {
+                                "type": "input_text",
+                                "text": prompt,
+                            },
+                        ],
+                    },
+                ]
             )
-            
-            # Extract result
-            result_text = response.choices[0].message.content
+
+            # Extract result from response
+            result_text = response.output_text
+
+            # Parse JSON from response
+            # Sometimes the response might include markdown code blocks, so clean it
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+
             result = json.loads(result_text)
-            
-            # Track usage and cost
-            usage = response.usage
-            input_cost = (usage.prompt_tokens / 1_000_000) * self.input_cost_per_1m
-            output_cost = (usage.completion_tokens / 1_000_000) * self.output_cost_per_1m
-            total_cost = input_cost + output_cost
-            
-            self.total_cost += total_cost
-            
-            print(f"   ✅ OpenAI extraction successful!")
-            print(f"   📊 Tokens: {usage.prompt_tokens} input + {usage.completion_tokens} output")
-            print(f"   💵 Cost: ${total_cost:.4f} (Total session: ${self.total_cost:.4f})")
-            
+
+            # Track usage and cost if available
+            if hasattr(response, 'usage') and response.usage:
+                usage = response.usage
+                input_cost = (usage.input_tokens / 1_000_000) * self.input_cost_per_1m
+                output_cost = (usage.output_tokens / 1_000_000) * self.output_cost_per_1m
+                total_cost = input_cost + output_cost
+
+                self.total_cost += total_cost
+
+                print(f"   ✅ Azure OpenAI extraction successful!")
+                print(f"   📊 Tokens: {usage.input_tokens} input + {usage.output_tokens} output")
+                print(f"   💵 Cost: ${total_cost:.4f} (Total session: ${self.total_cost:.4f})")
+            else:
+                print(f"   ✅ Azure OpenAI extraction successful!")
+                print(f"   ℹ️  Usage information not available")
+
             # Display extracted data
             invoices = result.get('invoices', [])
             common = result.get('common_details', {})
-            
+
             print(f"   📄 Found {len(invoices)} invoice(s):")
             for i, inv in enumerate(invoices, 1):
-                print(f"      Invoice {i}: {inv.get('invoice_number')} | Net: {inv.get('net_payment_amount')} | Bill: {inv.get('bill_amount')} | TDS: {inv.get('tds_amount')} | Date: {inv.get('invoice_date')}")
-            
+                print(
+                    f"      Invoice {i}: {inv.get('invoice_number')} | Net: {inv.get('net_payment_amount')} | Bill: {inv.get('bill_amount')} | TDS: {inv.get('tds_amount')} | Date: {inv.get('invoice_date')}")
+
             print(f"   📋 Common details:")
             print(f"      - Transaction Date: {common.get('transaction_date')}")
             print(f"      - Bank Ref: {common.get('bank_reference_number')}")
             print(f"      - Customer: {common.get('customer_name')}")
-            
+
             return result
-            
+
         except json.JSONDecodeError as e:
-            print(f"   ❌ OpenAI returned invalid JSON: {e}")
-            print(f"   📄 Raw response: {result_text[:500]}")
+            print(f"   ❌ Azure OpenAI returned invalid JSON: {e}")
+            print(f"   📄 Raw response: {result_text[:500] if 'result_text' in locals() else 'N/A'}")
             return None
-            
+
         except Exception as e:
-            print(f"   ❌ OpenAI extraction error: {e}")
+            print(f"   ❌ Azure OpenAI extraction error: {e}")
+            import traceback
+            print(f"   🔍 Full traceback:")
+            traceback.print_exc()
             return None
-    
+
     def get_total_cost(self):
         """Get total cost of all extractions in this session"""
         return self.total_cost
 
 
 # Test function
-def test_openai_extractor(pdf_path):
-    """Test the OpenAI extractor with a sample PDF"""
-    print(f"\n{'='*60}")
-    print(f"Testing OpenAI Payment Extractor")
-    print(f"{'='*60}\n")
-    
+def test_azure_openai_extractor(pdf_path):
+    """Test the Azure OpenAI extractor with a sample PDF"""
+    print(f"\n{'=' * 60}")
+    print(f"Testing Azure OpenAI Payment Extractor (Responses API)")
+    print(f"{'=' * 60}\n")
+
     try:
         # Load PDF
         with open(pdf_path, 'rb') as f:
             pdf_data = f.read()
-        
+
         print(f"📄 Loaded PDF: {pdf_path} ({len(pdf_data)} bytes)")
-        
+
         # Initialize extractor
-        extractor = OpenAIPaymentExtractor()
-        
+        extractor = AzureOpenAIPaymentExtractor()
+
         # Extract data
         result = extractor.extract_from_pdf(pdf_data)
-        
+
         if result:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"EXTRACTION RESULTS:")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(json.dumps(result, indent=2))
             print(f"\n💰 Total session cost: ${extractor.get_total_cost():.4f}")
         else:
             print(f"\n❌ Extraction failed")
-            
+
     except FileNotFoundError:
         print(f"❌ PDF file not found: {pdf_path}")
     except Exception as e:
         print(f"❌ Test error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
     import sys
-    
+
     if len(sys.argv) > 1:
         pdf_path = sys.argv[1]
-        test_openai_extractor(pdf_path)
+        test_azure_openai_extractor(pdf_path)
     else:
-        print("\n" + "="*60)
-        print("OpenAI Payment Advice Extractor - Test Mode")
-        print("="*60)
+        print("\n" + "=" * 60)
+        print("Azure OpenAI Payment Advice Extractor - Test Mode")
+        print("=" * 60)
         pdf_path = input("\n📄 Enter the path to your payment advice PDF: ").strip().strip('"')
-        
+
         if pdf_path:
-            test_openai_extractor(pdf_path)
+            test_azure_openai_extractor(pdf_path)
         else:
             print("❌ No path provided. Exiting.")
