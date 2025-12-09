@@ -20,7 +20,9 @@ PAYMENT_KEYWORDS = [
     'fund transfer', 'neft', 'rtgs', 'imps', 'upi',
     'transaction confirmation', 'credit advice', 'debit advice',
     'remittance advice', 'payment processed', 'amount credited',
-    'utr', 'transaction reference', 'payment reference'
+    'utr', 'transaction reference', 'payment reference',
+    'advice for', 'payee advice', 'payment remittance', 'remittance',
+    'transaction advice', 'fund transfer advice'
 ]
 
 
@@ -45,48 +47,79 @@ class PaymentAdviceExtractor:
         """Extract payment data using OpenAI only. Returns a list of payment dicts."""
         pdf_candidates = []
 
+        def _process_part(part):
+            content_disposition = part.get_content_disposition()
+            content_type = part.get_content_type()
+            content_encoding = part.get('Content-Transfer-Encoding', '')
+            filename = part.get_filename()
+                
+            # Decode filename if it's encoded (e.g., =?utf-8?B?...?=)
+            if filename:
+                try:
+                    decoded_parts = decode_header(filename)
+                    decoded_filename = ""
+                    for decoded_part, charset in decoded_parts:
+                        if isinstance(decoded_part, bytes):
+                            decoded_filename += decoded_part.decode(charset or 'utf-8', errors='ignore')
+                        else:
+                            decoded_filename += decoded_part
+                    filename = decoded_filename
+                except Exception:
+                    pass  # Keep original filename if decoding fails
+            
+            # Decode payload size early for debugging (without re-decoding twice)
+            payload = part.get_payload(decode=True)
+            size = len(payload) if payload else 0
+
+            # Debug: show all parts with size and encoding
+            print(f"   🔍 Part - Type: {content_type}, Disp: {content_disposition}, Enc: {content_encoding}, Filename: {filename}, Size: {size} bytes")
+                
+            # If this is a nested email, recurse into it
+            if content_type == 'message/rfc822' and payload:
+                try:
+                    nested_msg = email.message_from_bytes(payload)
+                    for nested_part in nested_msg.walk():
+                        _process_part(nested_part)
+                except Exception as e:
+                    print(f"   ⚠️  Failed to parse nested message/rfc822: {e}")
+                return
+
+            # Skip container multipart parts (payload is list/None)
+            if part.is_multipart():
+                return
+
+            # Check if it's a PDF attachment (inline or attachment)
+            if filename and filename.lower().endswith('.pdf'):
+                data = payload
+                pdf_candidates.append((filename, content_type, data))
+                print(f"   📎 Found PDF: {filename} ({len(data)} bytes)")
+                return
+            # Also check content type directly for PDFs without explicit filename
+            if content_type == 'application/pdf':
+                data = payload
+                fname = filename or 'payment_advice.pdf'
+                pdf_candidates.append((fname, content_type, data))
+                print(f"   📎 Found PDF (by content-type): {fname} ({len(data)} bytes)")
+                return
+            # Check for octet-stream with .pdf in name
+            if content_type == 'application/octet-stream' and filename and '.pdf' in filename.lower():
+                data = payload
+                pdf_candidates.append((filename, content_type, data))
+                print(f"   📎 Found PDF (octet-stream): {filename} ({len(data)} bytes)")
+                return
+            # Fallback: payload sniffing - if bytes start with %PDF, treat as PDF even without headers
+            if payload and payload[:4] == b'%PDF':
+                fname = filename or 'payment_advice_sniffed.pdf'
+                pdf_candidates.append((fname, content_type, payload))
+                print(f"   📎 Found PDF (sniffed payload): {fname} ({len(payload)} bytes)")
+                return
+
         if email_message.is_multipart():
             for part in email_message.walk():
-                content_disposition = part.get_content_disposition()
-                content_type = part.get_content_type()
-                filename = part.get_filename()
-                
-                # Decode filename if it's encoded (e.g., =?utf-8?B?...?=)
-                if filename:
-                    try:
-                        decoded_parts = decode_header(filename)
-                        decoded_filename = ""
-                        for decoded_part, charset in decoded_parts:
-                            if isinstance(decoded_part, bytes):
-                                decoded_filename += decoded_part.decode(charset or 'utf-8', errors='ignore')
-                            else:
-                                decoded_filename += decoded_part
-                        filename = decoded_filename
-                    except Exception:
-                        pass  # Keep original filename if decoding fails
-                
-                # Debug: show all parts
-                print(f"   🔍 Part - Type: {content_type}, Disposition: {content_disposition}, Filename: {filename}")
-                
-                # Check if it's a PDF attachment (inline or attachment)
-                if filename and filename.lower().endswith('.pdf'):
-                    data = part.get_payload(decode=True)
-                    pdf_candidates.append((filename, content_type, data))
-                    print(f"   📎 Found PDF: {filename} ({len(data)} bytes)")
-                    continue
-                # Also check content type directly for PDFs without explicit filename
-                elif content_type == 'application/pdf':
-                    data = part.get_payload(decode=True)
-                    fname = filename or 'payment_advice.pdf'
-                    pdf_candidates.append((fname, content_type, data))
-                    print(f"   📎 Found PDF (by content-type): {fname} ({len(data)} bytes)")
-                    continue
-                # Check for octet-stream with .pdf in name
-                elif content_type == 'application/octet-stream' and filename and '.pdf' in filename.lower():
-                    data = part.get_payload(decode=True)
-                    pdf_candidates.append((filename, content_type, data))
-                    print(f"   📎 Found PDF (octet-stream): {filename} ({len(data)} bytes)")
-                    continue
+                _process_part(part)
+        else:
+            # Single-part email: process the message itself
+            _process_part(email_message)
 
         if not pdf_candidates:
             print("⚠️  No PDF attachment found; skipping email")
@@ -180,13 +213,23 @@ class PaymentAdviceExtractor:
                         continue
 
                     body = ""
+                    html_body = ""
                     if email_message.is_multipart():
                         for part in email_message.walk():
-                            if part.get_content_type() == "text/plain":
+                            ctype = part.get_content_type()
+                            if ctype == "text/plain":
                                 body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                                 break
+                            if ctype == "text/html" and not html_body:
+                                html_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                     else:
                         body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
+
+                    # Fallback: strip HTML when no plain-text part is present
+                    if not body and html_body:
+                        import re
+                        body = re.sub(r'<[^>]+>', ' ', html_body)
+                        body = re.sub(r'\s+', ' ', body).strip()
 
                     if self.is_payment_advice_email(subject, body):
                         print(f"💰 Payment advice found: {subject[:50]}")
