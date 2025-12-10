@@ -193,6 +193,9 @@ class PaymentAdviceExtractor:
             mail.select('inbox')
             print("✅ Connected to Gmail")
 
+            # Set socket timeout to prevent hangs
+            mail.sock.settimeout(300)  # 5 min timeout per operation
+
             mark_as_read = os.getenv('MARK_PAYMENT_EMAILS_AS_READ', 'true').lower() == 'true'
             since_date = (datetime.now() - timedelta(days=days_back)).strftime('%d-%b-%Y')
             status, messages = mail.search(None, f'SINCE {since_date}')
@@ -208,7 +211,19 @@ class PaymentAdviceExtractor:
             payment_advices = []
             processed_emails = set()
 
-            for email_id in email_ids:
+            for idx, email_id in enumerate(email_ids):
+                # Reconnect every 20 emails to prevent timeout
+                if idx > 0 and idx % 100 == 0:
+                    print(f"   🔄 Reconnecting to prevent timeout (processed {idx} emails)...")
+                    try:
+                        mail.close()
+                        mail.logout()
+                    except:
+                        pass
+                    mail = imaplib.IMAP4_SSL(os.getenv('IMAP_SERVER'), int(os.getenv('IMAP_PORT')))
+                    mail.login(os.getenv('GMAIL_EMAIL'), os.getenv('GMAIL_PASSWORD'))
+                    mail.select('inbox')
+                    mail.sock.settimeout(300)
                 try:
                     status, msg_data = mail.fetch(email_id, '(BODY.PEEK[])')
                     email_message = email.message_from_bytes(msg_data[0][1])
