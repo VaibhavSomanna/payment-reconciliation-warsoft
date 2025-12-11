@@ -7,12 +7,14 @@ from datetime import datetime
 from fuzzywuzzy import fuzz
 from database import ReconciliationDB
 from warsoft_client import WarsoftClient
+from blob_storage_client import BlobStorageClient
 
 
 class ReconciliationEngine:
     def __init__(self, db=None, warsoft=None, auto_write_matched=True):
         self.db = db if db is not None else ReconciliationDB()
         self.warsoft = warsoft if warsoft is not None else WarsoftClient()
+        self.blob_storage = BlobStorageClient()  # Add blob storage client
         self.auto_write_matched = auto_write_matched
         self.invoice_cache = {}  # In-memory cache for fast lookups
 
@@ -192,8 +194,41 @@ class ReconciliationEngine:
             # Bank reference (from payment advice)
             bank_reference = payment.get('bank_reference_number') or payment.get('utr_number', 'N/A')
             
-            # PDF filename (from payment advice)
+            # UPLOAD PDF TO BLOB STORAGE
+            pdf_data = payment.get('pdf_data')
             pdf_filename = payment.get('pdf_filename', 'payment_advice.pdf')
+            
+            # DEBUG: Check if pdf_data exists
+            print(f"\n   🔍 PDF DATA CHECK:")
+            print(f"      pdf_filename: {pdf_filename}")
+            print(f"      pdf_data type: {type(pdf_data)}")
+            print(f"      pdf_data exists: {pdf_data is not None}")
+            if pdf_data:
+                print(f"      pdf_data size: {len(pdf_data)} bytes")
+                print(f"      pdf_data first 4 bytes: {pdf_data[:4] if len(pdf_data) >= 4 else 'N/A'}")
+            else:
+                print(f"      ❌ pdf_data is None or empty!")
+            
+            blob_url = None
+            uploaded_filename = None
+            file_location = "https://"  # Default fallback
+            
+            if pdf_data:
+                print(f"   📤 Uploading PDF to blob storage...")
+                blob_url, uploaded_filename = self.blob_storage.upload_pdf(pdf_data, pdf_filename)
+                
+                if blob_url:
+                    # Update file location and filename for Warsoft API
+                    pdf_filename = uploaded_filename
+                    file_location = blob_url
+                    # Store blob info in payment dict for tracking
+                    payment['blob_url'] = blob_url
+                    payment['blob_filename'] = uploaded_filename
+                    print(f"   ✅ PDF uploaded: {blob_url}")
+                else:
+                    print(f"   ⚠️  PDF upload failed, using default file location")
+            else:
+                print(f"   ⚠️  No PDF data available, using default file location")
 
             print(f"\n   🔍 WARSOFT WRITE - FINAL DATA:")
             print(f"   - Invoice Number: {invoice_number}")
@@ -205,6 +240,7 @@ class ReconciliationEngine:
             print(f"   - Total Amount: ₹{total_amount}")
             print(f"   - Bank Reference: {bank_reference}")
             print(f"   - PDF Filename: {pdf_filename}")
+            print(f"   - File Location: {file_location}")
             print(f"   - Invoice Status: {invoice_status}\n")
 
             # Validate critical fields
@@ -223,7 +259,7 @@ class ReconciliationEngine:
                 "amount": str(payment_amount_net) if payment_amount_net else "0",
                 "tds": str(tds_amount) if tds_amount else "0",
                 "file_name": pdf_filename,
-                "file_location": "https://",  # Default file location
+                "file_location": file_location,  # Blob storage URL
                 "bank_reference": bank_reference,
                 "total_amount": str(total_amount) if total_amount else "0",
                 "transaction_date": transaction_date
@@ -257,7 +293,9 @@ class ReconciliationEngine:
             'date_match': None,  # Date matching removed - match only on invoice number and amount
             'confidence_score': confidence,
             'discrepancy_notes': notes,
-            'reconciled_by': 'SYSTEM'
+            'reconciled_by': 'SYSTEM',
+            'pdf_filename': payment.get('blob_filename') or payment.get('pdf_filename'),
+            'blob_url': payment.get('blob_url')
         }
 
     def reconcile_all_pending(self):
@@ -292,5 +330,14 @@ class ReconciliationEngine:
 
             results.append(result)
 
+        # Upload summary
+        uploaded_count = sum(1 for r in results if r.get('blob_url'))
+        failed_count = len([r for r in results if r.get('match_status') == 'MATCHED']) - uploaded_count
+        
         print(f"\n✅ Reconciliation complete: {len(results)} payments processed")
+        print(f"\n📊 BLOB UPLOAD SUMMARY:")
+        print(f"   ✅ PDFs uploaded to blob storage: {uploaded_count}")
+        if failed_count > 0:
+            print(f"   ⚠️  Upload failures: {failed_count}")
+        
         return results
