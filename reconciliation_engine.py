@@ -68,10 +68,10 @@ class ReconciliationEngine:
         discrepancies = []
         confidence = 100.0
 
-        # Amount matching - use bill_amount (gross invoice amount) to match with Zoho total
-        # bill_amount = gross amount before TDS deduction (should match Zoho invoice total)
-        # Falls back to payment_amount if bill_amount is not available
-        payment_amount = float(payment.get('bill_amount') or payment.get('payment_amount') or 0)
+        # Amount matching - use bill_amount (gross invoice amount) to match with Warsoft total
+        # bill_amount = gross amount before TDS deduction (should match invoice total)
+        # Falls back to net_payment_amount if bill_amount is not available
+        payment_amount = float(payment.get('bill_amount') or payment.get('net_payment_amount') or 0)
         invoice_amount = float(invoice['total_amount'])
         amount_difference = abs(payment_amount - invoice_amount)
         amount_match = amount_difference <= 10.0  # Allow ₹10 difference for rounding
